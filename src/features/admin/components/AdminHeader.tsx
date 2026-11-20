@@ -1,63 +1,99 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Activity, ChevronDown, FileSpreadsheet, FileText } from 'lucide-react';
+import { Activity, ChevronDown, Download, FileSpreadsheet, X } from 'lucide-react';
+import type { Organization, Registration } from '../../../types';
+import type { DateRange, OverallScope } from '../studentExcel';
+import { SearchableSelect } from '../../../components/common/SearchableSelect';
+import { isWalkIn } from '../../../utils/clientInfo';
 
 interface AdminHeaderProps {
   onExportCsv: () => void;
-  onExportExcel: () => Promise<void>;
+  onExportExcel: (scope?: OverallScope, range?: DateRange, label?: string) => Promise<void>;
   exportingExcel: boolean;
+  organizations: Organization[];
+  registrations: Registration[];
 }
 
-export const AdminHeader: React.FC<AdminHeaderProps> = ({ onExportCsv, onExportExcel, exportingExcel }) => {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [exportingFormat, setExportingFormat] = useState<'csv' | 'excel' | null>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
+type ExportKind = 'master' | 'school' | 'walkin' | 'levels' | 'csv';
+
+const KINDS: Array<{ id: ExportKind; label: string; hint: string }> = [
+  { id: 'master', label: 'Master Overall: all schools', hint: 'One file: Summary + one sheet per school + Walk-ins' },
+  { id: 'school', label: 'One school', hint: 'Only that school\'s clients, grouped by level. Safe to give to the school.' },
+  { id: 'walkin', label: 'Walk-in clients', hint: 'Family portraits, events and other walk-ins' },
+  { id: 'levels', label: 'All schools by level', hint: 'COLLEGE OVERALL, SHS OVERALL… sheets, as before' },
+  { id: 'csv', label: 'CSV list of every job order', hint: 'One plain list with paid and balance (dates not applied)' },
+];
+
+const manilaDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' });
+
+/**
+ * Admin header with the Export panel: Overall workbooks (master, one school, walk-ins or by level)
+ * for an optional date range, or the CSV list.
+ */
+export const AdminHeader: React.FC<AdminHeaderProps> = ({ onExportCsv, onExportExcel, exportingExcel, organizations, registrations }) => {
+  const [open, setOpen] = useState(false);
+  const [kind, setKind] = useState<ExportKind>('master');
+  const [schoolId, setSchoolId] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const exporting = exportingFormat !== null || exportingExcel;
+  const exporting = busy || exportingExcel;
 
   useEffect(() => {
-    if (!menuOpen) return;
-
+    if (!open) return;
     const closeOnOutsideClick = (event: PointerEvent) => {
-      if (!dropdownRef.current?.contains(event.target as Node)) setMenuOpen(false);
+      if (!panelRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
-      setMenuOpen(false);
+      setOpen(false);
       triggerRef.current?.focus();
     };
-
     document.addEventListener('pointerdown', closeOnOutsideClick);
     document.addEventListener('keydown', closeOnEscape);
     return () => {
       document.removeEventListener('pointerdown', closeOnOutsideClick);
       document.removeEventListener('keydown', closeOnEscape);
     };
-  }, [menuOpen]);
+  }, [open]);
 
-  const runExport = async (format: 'csv' | 'excel') => {
-    if (exporting) return;
-    setMenuOpen(false);
-    setExportingFormat(format);
-    try {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      if (format === 'csv') onExportCsv();
-      else await onExportExcel();
-    } finally {
-      setExportingFormat(null);
-      triggerRef.current?.focus();
+  const perSchool = new Map<string, number>();
+  for (const reg of registrations) {
+    if (!isWalkIn(reg) && reg.organization && reg.status !== 'cancelled') {
+      perSchool.set(reg.organization, (perSchool.get(reg.organization) ?? 0) + 1);
     }
+  }
+  const schoolOptions = [...organizations].sort((a, b) => a.name.localeCompare(b.name)).map((org) => ({
+    value: org.id,
+    label: `${org.name}${org.code ? ` (${org.code})` : ''} · ${perSchool.get(org.id) ?? 0}`,
+    keywords: org.code,
+  }));
+  const school = organizations.find((org) => org.id === schoolId);
+  const badRange = Boolean(from && to && from > to);
+  const canExport = !exporting && !badRange && (kind !== 'school' || Boolean(school));
+
+  const setQuick = (preset: 'all' | 'month' | 'today') => {
+    const today = manilaDay.format(new Date());
+    if (preset === 'all') { setFrom(''); setTo(''); }
+    if (preset === 'today') { setFrom(today); setTo(today); }
+    if (preset === 'month') { setFrom(`${today.slice(0, 8)}01`); setTo(today); }
   };
 
-  const moveMenuFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
-    event.preventDefault();
-    const options = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
-    const current = options.indexOf(document.activeElement as HTMLButtonElement);
-    const next = event.key === 'Home' ? 0
-      : event.key === 'End' ? options.length - 1
-      : event.key === 'ArrowDown' ? (current + 1) % options.length
-      : (current - 1 + options.length) % options.length;
-    options[next]?.focus();
+  const runExport = async () => {
+    if (!canExport) return;
+    setBusy(true);
+    try {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const range: DateRange = { from: from || undefined, to: to || undefined };
+      if (kind === 'csv') onExportCsv();
+      else if (kind === 'school' && school) await onExportExcel({ kind: 'school', schoolId: school.id }, range, school.code || school.name);
+      else if (kind !== 'school') await onExportExcel({ kind }, range);
+      setOpen(false);
+      triggerRef.current?.focus();
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -76,45 +112,100 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({ onExportCsv, onExportE
         </h1>
       </div>
 
-      <div ref={dropdownRef} className="relative self-start sm:self-auto">
+      <div ref={panelRef} className="relative self-start sm:self-auto">
         <button
           ref={triggerRef}
           type="button"
-          onClick={() => setMenuOpen((open) => !open)}
+          onClick={() => setOpen((value) => !value)}
           disabled={exporting}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          aria-controls="admin-export-menu"
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls="admin-export-panel"
           className="btn-tactile min-h-[42px] flex items-center justify-center gap-2 px-4 py-2 bg-gold text-on-gold text-xs font-black uppercase tracking-wider cursor-pointer disabled:cursor-wait disabled:opacity-60"
         >
           <FileSpreadsheet className="w-4 h-4 stroke-[2.5]" />
-          <span>{exporting ? `Exporting ${exportingFormat === 'csv' ? 'CSV' : 'Excel'}…` : 'Export'}</span>
-          {!exporting && <ChevronDown className={`w-3.5 h-3.5 transition-transform ${menuOpen ? 'rotate-180' : ''}`} />}
+          <span>{exporting ? 'Exporting…' : 'Export'}</span>
+          {!exporting && <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />}
         </button>
 
-        {menuOpen && (
+        {open && (
           <div
-            id="admin-export-menu"
-            role="menu"
-            aria-label="Export format"
-            onKeyDown={moveMenuFocus}
-            className="absolute left-0 top-full z-50 mt-2 w-44 border-2 border-gold bg-obsidian p-1 shadow-lux-gold sm:left-auto sm:right-0"
+            id="admin-export-panel"
+            role="dialog"
+            aria-label="Export"
+            className="absolute left-0 top-full z-50 mt-2 w-[min(24rem,calc(100vw-2rem))] border-2 border-gold bg-obsidian p-4 shadow-lux-gold sm:left-auto sm:right-0 space-y-4 font-mono text-xs text-white"
           >
+            <div className="flex items-center justify-between">
+              <span className="font-black uppercase tracking-wider text-gold">Export</span>
+              <button type="button" aria-label="Close" onClick={() => setOpen(false)} className="p-1 hover:text-gold cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <fieldset className="space-y-1.5">
+              <legend className="mb-1.5 font-bold uppercase text-neutral-400 text-[10px]">What to export</legend>
+              {KINDS.map(({ id, label, hint }) => (
+                <label key={id} className={`flex gap-2 p-2 border cursor-pointer ${kind === id ? 'border-gold bg-obsidian-2' : 'border-neutral-700 hover:border-neutral-500'}`}>
+                  <input type="radio" name="export-kind" value={id} checked={kind === id} onChange={() => setKind(id)} className="mt-0.5 accent-gold" />
+                  <span>
+                    <span className="block font-bold">{label}</span>
+                    <span className="block text-[10px] text-neutral-400">{hint}</span>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+
+            {kind === 'school' && (
+              <div className="text-ink">
+                <label htmlFor="export-school" className="mb-1 block font-bold uppercase text-neutral-400 text-[10px]">School</label>
+                <SearchableSelect
+                  id="export-school"
+                  value={schoolId}
+                  onChange={setSchoolId}
+                  options={schoolOptions}
+                  placeholder="Type a school name or code"
+                  emptyText="No school matches. Try the school code."
+                  className="w-full min-h-10 border-2 border-line bg-canvas py-2 font-bold text-xs text-ink"
+                />
+              </div>
+            )}
+
+            <fieldset disabled={kind === 'csv'} className="space-y-2 disabled:opacity-40">
+              <legend className="mb-1 font-bold uppercase text-neutral-400 text-[10px]">Dates (optional)</legend>
+              <div className="flex flex-wrap gap-1.5">
+                {([['all', 'All dates'], ['month', 'This month'], ['today', 'Today']] as const).map(([preset, text]) => (
+                  <button key={preset} type="button" onClick={() => setQuick(preset)}
+                    className="px-2 py-1 border border-neutral-600 hover:border-gold uppercase text-[10px] font-bold cursor-pointer">
+                    {text}
+                  </button>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="block text-[10px] text-neutral-400 mb-0.5">From</span>
+                  <input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)}
+                    className="w-full p-1.5 bg-canvas text-ink border border-line" />
+                </label>
+                <label className="block">
+                  <span className="block text-[10px] text-neutral-400 mb-0.5">To</span>
+                  <input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)}
+                    className="w-full p-1.5 bg-canvas text-ink border border-line" />
+                </label>
+              </div>
+              <p className={`text-[10px] ${badRange ? 'text-red-400 font-bold' : 'text-neutral-400'}`}>
+                {badRange ? '"From" must be on or before "To".'
+                  : 'Uses the pictorial date (or the registration date when there is none). Leave both empty for everything.'}
+              </p>
+            </fieldset>
+
             <button
               type="button"
-              role="menuitem"
-              onClick={() => void runExport('csv')}
-              className="flex min-h-[42px] w-full items-center gap-2 px-3 py-2 text-left font-mono text-xs font-black uppercase tracking-wider text-white hover:bg-gold hover:text-on-gold focus:bg-gold focus:text-on-gold focus:outline-none"
+              onClick={() => void runExport()}
+              disabled={!canExport}
+              className="btn-tactile w-full min-h-[42px] flex items-center justify-center gap-2 bg-gold text-on-gold font-black uppercase tracking-wider cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <FileText className="h-4 w-4" /> CSV
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => void runExport('excel')}
-              className="flex min-h-[42px] w-full items-center gap-2 px-3 py-2 text-left font-mono text-xs font-black uppercase tracking-wider text-white hover:bg-gold hover:text-on-gold focus:bg-gold focus:text-on-gold focus:outline-none"
-            >
-              <FileSpreadsheet className="h-4 w-4" /> Excel
+              <Download className="w-4 h-4" />
+              {kind === 'school' && !school ? 'Choose a school first' : kind === 'csv' ? 'Download CSV' : 'Download Excel'}
             </button>
           </div>
         )}

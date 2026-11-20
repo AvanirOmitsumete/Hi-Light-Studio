@@ -17,6 +17,8 @@ interface PackageSelectionSectionProps {
   onPaymentTypeChange: (type: 'full' | 'downpayment') => void;
   totalAmount: number;
   errors: RegistrationErrors;
+  /** Shown instead of the package list when it is empty. */
+  emptyMessage?: string;
 }
 
 export const PackageSelectionSection: React.FC<PackageSelectionSectionProps> = ({
@@ -30,6 +32,7 @@ export const PackageSelectionSection: React.FC<PackageSelectionSectionProps> = (
   onPaymentTypeChange,
   totalAmount,
   errors,
+  emptyMessage,
 }) => {
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const [viewedIndex, setViewedIndex] = useState(0);
@@ -216,7 +219,7 @@ export const PackageSelectionSection: React.FC<PackageSelectionSectionProps> = (
       </div>
       {packages.length === 0 && (
         <p className="border border-dashed border-neutral-300 p-4 text-sm text-neutral-600">
-          No Job Order Packages are currently available.
+          {emptyMessage ?? 'No Job Order Packages are currently available.'}
         </p>
       )}
 

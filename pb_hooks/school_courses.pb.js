@@ -5,15 +5,19 @@ routerAdd("POST", "/api/studioflow/school-courses", (e) => {
     throw new ForbiddenError("Only administrators can assign school courses.");
   }
 
-  const input = new DynamicModel({ schoolId: "", levelId: "", courseId: "", name: "", code: "" });
+  const input = new DynamicModel({ schoolId: "", levelId: "", levelName: "", courseId: "", name: "", code: "" });
   e.bindBody(input);
   const cleanName = (value) => value.trim().replace(/\s+/g, " ");
   const nameKey = (value) => cleanName(value).toLowerCase();
   const name = cleanName(input.name);
   const code = input.code.trim().toUpperCase();
-  if (!input.schoolId || !input.levelId) {
+  // levelId picks an existing level (any school's, used as a template); levelName adds a new
+  // level such as "Elementary" or "Graduate School" to the school.
+  const newLevelName = cleanName(input.levelName);
+  if (!input.schoolId || (!input.levelId && !newLevelName)) {
     throw new BadRequestError("Choose a school and academic level.");
   }
+  if (newLevelName.length > 60) throw new BadRequestError("The academic level name is too long.");
   if (!name || (!input.courseId && !code)) {
     throw new BadRequestError("Enter a course name and code, or select an existing course.");
   }
@@ -21,8 +25,10 @@ routerAdd("POST", "/api/studioflow/school-courses", (e) => {
   let assignment;
   e.app.runInTransaction((tx) => {
     const [school] = tx.findRecordsByFilter("organizations", "id = {:id}", "", 1, 0, { id: input.schoolId });
-    const [template] = tx.findRecordsByFilter("levels", "id = {:id}", "", 1, 0, { id: input.levelId });
-    if (!school || !template) {
+    const [template] = input.levelId
+      ? tx.findRecordsByFilter("levels", "id = {:id}", "", 1, 0, { id: input.levelId })
+      : [null];
+    if (!school || (input.levelId && !template)) {
       throw new BadRequestError("Choose an available school and academic level.");
     }
     let course;
@@ -50,7 +56,7 @@ routerAdd("POST", "/api/studioflow/school-courses", (e) => {
       }
     }
 
-    const levelName = template.getString("name");
+    const levelName = template ? template.getString("name") : newLevelName;
     if (course) {
       const existing = tx.findRecordsByFilter(
         "school_courses", "school_id = {:school} && course_id = {:course}", "", 1, 0,
@@ -70,12 +76,16 @@ routerAdd("POST", "/api/studioflow/school-courses", (e) => {
     }
 
     let level = template;
-    if (template.getString("organization") !== school.id) {
-      const localLevel = tx.findRecordsByFilter(
+    if (!template || template.getString("organization") !== school.id) {
+      const schoolLevels = tx.findRecordsByFilter(
         "levels", "organization = {:school}", "order,id", 0, 0, { school: school.id },
-      ).find((record) => nameKey(record.getString("name")) === nameKey(levelName));
+      );
+      const localLevel = schoolLevels.find((record) => nameKey(record.getString("name")) === nameKey(levelName));
+      // A brand-new level goes after the school's existing ones.
+      const order = template ? template.getInt("order")
+        : schoolLevels.reduce((max, record) => Math.max(max, record.getInt("order")), 0) + 1;
       level = localLevel || new Record(tx.findCollectionByNameOrId("levels"), {
-        organization: school.id, name: levelName, order: template.getInt("order"),
+        organization: school.id, name: levelName, order,
       });
       if (!localLevel) tx.save(level);
     }

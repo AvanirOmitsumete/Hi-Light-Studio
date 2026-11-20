@@ -1,7 +1,6 @@
 import React from 'react';
-import { Check, Printer } from 'lucide-react';
+import { Check } from 'lucide-react';
 import type { Registration } from '../../../types';
-import { YellowFormReceipt } from '../../../components/YellowFormReceipt';
 import { formatJobOrderNo, formatQueueNumber } from '../../../utils/formatters';
 
 interface RegistrationConfirmationProps {
@@ -32,7 +31,7 @@ export const RegistrationConfirmation: React.FC<RegistrationConfirmationProps> =
 
         <p className="text-xs sm:text-sm text-neutral-300 mt-4 leading-relaxed">
           Proceed to the <strong className="text-gold uppercase">Cashier Counter</strong> and
-          present your Job Order or Queue Number below to confirm payment.
+          present your Job Order or Queue Number below to pay. The cashier prints your official Job Order claim stub after payment.
         </p>
 
         <div className="grid grid-cols-2 gap-4 mt-6">
@@ -57,26 +56,12 @@ export const RegistrationConfirmation: React.FC<RegistrationConfirmationProps> =
         <div className="flex flex-col sm:flex-row gap-3 mt-7">
           <button
             type="button"
-            onClick={() => window.print()}
-            className="btn-tactile flex-1 min-h-[48px] flex items-center justify-center gap-2 px-6 py-3 bg-gold text-on-gold font-black text-xs uppercase tracking-widest cursor-pointer"
-          >
-            <Printer className="w-4 h-4" /> Print / Save Claim Stub
-          </button>
-          <button
-            type="button"
             onClick={onReset}
-            className="btn-tactile min-h-[48px] px-6 py-3 bg-transparent border border-neutral-700 text-white font-bold text-xs uppercase tracking-widest hover:border-gold cursor-pointer"
+            className="btn-tactile flex-1 min-h-[48px] px-6 py-3 bg-gold text-on-gold font-black text-xs uppercase tracking-widest cursor-pointer"
           >
             Register Next Client
           </button>
         </div>
-      </div>
-
-      <div className="animate-enter-delay-1">
-        <div className="no-print font-mono text-[10px] font-bold text-neutral-500 uppercase tracking-[0.2em] mb-2">
-          PREVIEW // DIGITAL JOB ORDER CLAIM STUB
-        </div>
-        <YellowFormReceipt registration={record} copyType="customer" />
       </div>
     </div>
   );

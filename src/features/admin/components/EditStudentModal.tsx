@@ -6,12 +6,13 @@ import type {
   Course,
   Package,
   RegistrationStatus,
-  PaymentStatus,
   FramingStatus,
   PhotoStatus,
 } from '../../../types';
 import { formatCurrency } from '../../../utils/formatters';
 import { getRegistrationAddOns, sumAddOnAmounts } from '../../../utils/registrationAddOns';
+import { isWalkIn } from '../../../utils/clientInfo';
+import { useStudioSettings } from '../../../hooks/useStudioSettings';
 
 export type RegistrationEdits = Partial<Registration> & { mua_correction?: 'required' | 'waived' };
 
@@ -44,7 +45,6 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
   const [packageId, setPackageId] = useState(reg.package || '');
   const [pictorialDate, setPictorialDate] = useState(reg.pictorial_date?.slice(0, 10) ?? '');
   const [status, setStatus] = useState<RegistrationStatus>(reg.status);
-  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>(reg.payment_status);
   const [framingStatus, setFramingStatus] = useState<FramingStatus>(
     reg.framing_status || 'none'
   );
@@ -52,6 +52,13 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
     reg.photo_status || 'pending_shoot'
   );
   const [notes, setNotes] = useState(reg.notes || '');
+  // Walk-in clients have a session instead of a school and course.
+  const walkIn = isWalkIn(reg);
+  const { sessionTypes } = useStudioSettings();
+  const [sessionTypeId, setSessionTypeId] = useState(reg.session_type || '');
+  const [clientOrg, setClientOrg] = useState(reg.client_org || '');
+  const [eventDate, setEventDate] = useState(reg.event_date?.slice(0, 10) ?? '');
+  const [eventVenue, setEventVenue] = useState(reg.event_venue || '');
   const [muaCorrection, setMuaCorrection] = useState<NonNullable<RegistrationEdits['mua_correction']> | ''>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -60,6 +67,9 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
   const packageChanged = selectedPkg && packageId !== reg.package;
   const currentTotal = packageChanged ? selectedPkg.amount + sumAddOnAmounts(addOns) + (reg.other_fees || 0) : reg.total_amount;
   const currentBalance = packageChanged ? Math.max(0, currentTotal - (reg.paid_amount || 0)) : reg.balance;
+  // A cheaper package can leave the client paid beyond the new total: that money is owed back.
+  const refundDue = packageChanged ? Math.max(0, (reg.paid_amount || 0) - currentTotal) : 0;
+  const isCancelled = reg.status === 'cancelled';
   const beforePhotography = ['pending_payment', 'paid'].includes(reg.status);
   const canCorrectMua = beforePhotography && !reg.makeup_state;
 
@@ -71,16 +81,22 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
         given_name: givenName.trim(),
         family_name: familyName.trim(),
         middle_name: middleName.trim(),
-        student_id: studentId.trim(),
-        section: section.trim(),
         mobile_number: mobileNumber.trim(),
         email: email.trim(),
-        organization: organizationId,
-        course: courseId,
+        ...(walkIn ? {
+          session_type: sessionTypeId,
+          client_org: clientOrg.trim(),
+          event_date: eventDate ? `${eventDate} 00:00:00.000Z` : '',
+          event_venue: eventVenue.trim(),
+        } : {
+          student_id: studentId.trim(),
+          section: section.trim(),
+          organization: organizationId,
+          course: courseId,
+        }),
         package: packageId,
         pictorial_date: pictorialDate ? `${pictorialDate} 00:00:00.000Z` : '',
         status,
-        payment_status: paymentStatus,
         framing_status: framingStatus,
         photo_status: photoStatus,
         notes: notes.trim(),
@@ -98,7 +114,7 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
         <div className="flex items-center justify-between pb-3 border-b-2 border-line">
           <div>
             <h3 className="font-mono text-sm font-black uppercase tracking-wider text-ink">
-              Edit Student Record // JO № {reg.job_order_no}
+              Edit {walkIn ? 'Walk-in Client' : 'Student'} Record // JO № {reg.job_order_no}
             </h3>
             <p className="text-[11px] text-neutral-500">
               Update participant details, academic affiliations, package selection, and status.
@@ -153,7 +169,8 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
           </div>
 
           {/* Row 2: Identifiers & Contact */}
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+          <div className={`grid grid-cols-1 gap-3 ${walkIn ? 'sm:grid-cols-2' : 'sm:grid-cols-4'}`}>
+            {!walkIn && <>
             <div>
               <label className="block font-black uppercase text-ink mb-1">
                 Student ID
@@ -176,6 +193,7 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
                 className="w-full p-2 bg-panel border border-line uppercase"
               />
             </div>
+            </>}
             <div>
               <label htmlFor="edit-student-mobile" className="block font-black uppercase text-ink mb-1">
                 Mobile Number <span className="font-normal text-neutral-500">(Optional)</span>
@@ -201,8 +219,40 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
             </div>
           </div>
 
+          {/* Row 3 (walk-in): Session, Organization, Event Date & Venue */}
+          {walkIn && (
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <div>
+                <label htmlFor="edit-walkin-session" className="block font-black uppercase text-ink mb-1">Session</label>
+                <select id="edit-walkin-session" value={sessionTypeId} onChange={(e) => setSessionTypeId(e.target.value)}
+                  className="w-full p-2 bg-panel border border-line">
+                  <option value="">—</option>
+                  {sessionTypes.filter((type) => type.is_active || type.id === sessionTypeId).map((type) => (
+                    <option key={type.id} value={type.id}>{type.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="edit-walkin-org" className="block font-black uppercase text-ink mb-1">Organization / Company</label>
+                <input id="edit-walkin-org" value={clientOrg} maxLength={120} onChange={(e) => setClientOrg(e.target.value)}
+                  className="w-full p-2 bg-panel border border-line" />
+              </div>
+              <div>
+                <label htmlFor="edit-walkin-date" className="block font-black uppercase text-ink mb-1">Event Date</label>
+                <input id="edit-walkin-date" type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)}
+                  className="w-full p-2 bg-panel border border-line" />
+              </div>
+              <div>
+                <label htmlFor="edit-walkin-venue" className="block font-black uppercase text-ink mb-1">Venue</label>
+                <input id="edit-walkin-venue" value={eventVenue} maxLength={200} onChange={(e) => setEventVenue(e.target.value)}
+                  className="w-full p-2 bg-panel border border-line" />
+              </div>
+            </div>
+          )}
+
           {/* Row 3: School, Course & Schedule */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className={`grid grid-cols-1 gap-3 ${walkIn ? '' : 'sm:grid-cols-3'}`}>
+            {!walkIn && <>
             <div>
               <label className="block font-black uppercase text-ink mb-1">
                 School / Organization
@@ -235,6 +285,7 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
                 ))}
               </select>
             </div>
+            </>}
             <div>
               <label htmlFor="edit-student-pictorial-date" className="block font-black uppercase text-ink mb-1">
                 Scheduled Pictorial Date
@@ -279,6 +330,13 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
                 </span>
               </div>
             </div>
+            {refundDue > 0 && (
+              <div role="alert" className="p-3 border-2 border-red-600 bg-red-50 text-red-900 leading-relaxed">
+                <strong>The client already paid {formatCurrency(reg.paid_amount, { exact: true })}</strong>, more than the new total of {formatCurrency(currentTotal, { exact: true })}.
+                After saving, {formatCurrency(refundDue, { exact: true })} is owed back to the client: record it with <strong>Refund</strong> in
+                Analytics &amp; Overview → ledger (filter “Refund Due”).
+              </div>
+            )}
             {addOns.length > 0 && (
               <div className="space-y-1 border-t border-neutral-200 pt-2">
                 <h4 className="font-black uppercase">Selected Add-ons</h4>
@@ -323,8 +381,10 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
               </label>
               <select
                 value={status}
+                disabled={isCancelled}
+                title={isCancelled ? 'Cancelled: use the Restore button in the Clients Directory' : undefined}
                 onChange={(e) => setStatus(e.target.value as RegistrationStatus)}
-                className="w-full p-2 bg-panel border border-line uppercase text-[11px]"
+                className="w-full p-2 bg-panel border border-line uppercase text-[11px] disabled:opacity-60"
               >
                 <option value="pending_payment">Pending Payment</option>
                 <option value="paid">Paid (In Queue)</option>
@@ -332,39 +392,37 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
                 <option value="done_shooting">Done Shooting</option>
                 <option value="completed">Completed</option>
                 <option value="ready_for_pickup">Ready for Pickup</option>
-                <option value="released">Released</option>
-                <option value="cancelled">Cancelled</option>
+                {/* Release happens at the cashier (it records who claimed the order). */}
+                {reg.status === 'released' && <option value="released">Released</option>}
+                {/* Cancelling and restoring use their own buttons (they record the reason and who). */}
+                {isCancelled && <option value="cancelled">Cancelled</option>}
               </select>
+              {isCancelled && <p className="mt-1 text-[10px] text-neutral-600">Use Restore in the Clients Directory.</p>}
             </div>
             <div>
               <label className="block font-black uppercase text-ink mb-1">
                 Payment Status
               </label>
-              <select
-                value={paymentStatus}
-                onChange={(e) => setPaymentStatus(e.target.value as PaymentStatus)}
-                className="w-full p-2 bg-panel border border-line uppercase text-[11px]"
-              >
-                <option value="unpaid">Unpaid</option>
-                <option value="downpayment">Downpayment</option>
-                <option value="fully_paid">Fully Paid</option>
-              </select>
+              {/* Worked out from the receipts and refunds; it can't be set by hand. */}
+              <div className="w-full p-2 bg-canvas border border-neutral-300 uppercase text-[11px] font-bold" title="Set automatically from payments and refunds">
+                {reg.payment_status === 'fully_paid' ? 'Fully Paid' : reg.payment_status === 'downpayment' ? 'Downpayment' : 'Unpaid'}
+              </div>
             </div>
             <div>
               <label className="block font-black uppercase text-ink mb-1">
-                Framing Status
+                Production Status
               </label>
               <select
                 value={framingStatus}
                 onChange={(e) => setFramingStatus(e.target.value as FramingStatus)}
                 className="w-full p-2 bg-panel border border-line uppercase text-[11px]"
               >
-                <option value="none">None</option>
+                <option value="none">Not Started</option>
                 <option value="pending_framing">Pending</option>
                 <option value="in_production">In Production</option>
                 <option value="framed">Framed</option>
-                <option value="ready_for_pickup">Ready</option>
-                <option value="released">Released</option>
+                <option value="ready_for_pickup">Ready for Pickup</option>
+                {reg.framing_status === 'released' && <option value="released">Released</option>}
               </select>
             </div>
             <div>

@@ -2,6 +2,7 @@ import React from 'react';
 import type { Organization, Level, Course } from '../../../types';
 import { validationProps, type RegistrationErrors } from '../registrationValidation';
 import { RegistrationFieldError } from './RegistrationFieldError';
+import { SearchableSelect } from '../../../components/common/SearchableSelect';
 
 const invalidBorder = 'aria-invalid:border-red-600 aria-invalid:focus:border-red-600';
 
@@ -28,6 +29,8 @@ interface ClientInfoSectionProps {
   section: string;
   onSectionChange: (value: string) => void;
   errors: RegistrationErrors;
+  /** False for walk-in clients: only the name fields are shown. */
+  showSchool?: boolean;
 }
 
 export const ClientInfoSection: React.FC<ClientInfoSectionProps> = ({
@@ -53,6 +56,7 @@ export const ClientInfoSection: React.FC<ClientInfoSectionProps> = ({
   section,
   onSectionChange,
   errors,
+  showSchool = true,
 }) => {
   return (
     <section aria-labelledby="sec-client-info">
@@ -113,6 +117,7 @@ export const ClientInfoSection: React.FC<ClientInfoSectionProps> = ({
         </div>
       </div>
 
+      {showSchool && (<>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
         <label className="block text-[11px] font-black text-ink uppercase tracking-wider">
           Student ID <span className="font-normal normal-case">(optional)</span>
@@ -123,20 +128,17 @@ export const ClientInfoSection: React.FC<ClientInfoSectionProps> = ({
           <label htmlFor="registration-organization" className="block text-[11px] font-black text-ink uppercase tracking-wider mb-1.5">
             School / Campus / Organization <span className="text-red-600">*</span>
           </label>
-          <select
+          {/* Type to filter by school name or code (e.g. "san carlos" or "USC"). */}
+          <SearchableSelect
             {...validationProps('organization', errors.organization)}
-            required
             value={selectedOrgId}
-            onChange={(e) => onOrgChange(e.target.value)}
-            className={`w-full min-h-[48px] text-sm px-3.5 py-2.5 border border-neutral-400 focus:border-line bg-panel font-bold ${invalidBorder}`}
-          >
-            <option value="">{organizations.length ? 'Select a school' : 'No schools available'}</option>
-            {organizations.map((org) => (
-              <option key={org.id} value={org.id}>
-                {org.name}
-              </option>
-            ))}
-          </select>
+            onChange={onOrgChange}
+            disabled={!organizations.length}
+            options={organizations.map((org) => ({ value: org.id, label: org.name, keywords: org.code }))}
+            placeholder={organizations.length ? 'Type to search your school' : 'No schools available'}
+            emptyText="No school matches. Check the spelling or try the school code."
+            className={`w-full min-h-[48px] text-sm py-2.5 border border-neutral-400 focus:border-line bg-panel font-bold disabled:opacity-60 ${invalidBorder}`}
+          />
           <RegistrationFieldError field="organization" errors={errors} />
         </div>
 
@@ -171,30 +173,23 @@ export const ClientInfoSection: React.FC<ClientInfoSectionProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-4">
         <div className="sm:col-span-2">
           <label htmlFor="registration-course" className="block text-[11px] font-black text-ink uppercase tracking-wider mb-1.5">
-            Full Name of Course / Strand <span className="text-red-600">*</span>
+            Course / Strand / Grade <span className="text-red-600">*</span>
           </label>
-          <select
+          {/* Type to filter by course name or code (e.g. "acc" or "BSA"); only listed courses can be chosen. */}
+          <SearchableSelect
             {...validationProps('course', errors.course)}
             value={selectedCourseId}
-            onChange={(e) => onCourseChange(e.target.value)}
+            onChange={onCourseChange}
             disabled={!courses.length}
-            required
-            className={`w-full min-h-[48px] text-sm px-3.5 py-2.5 border border-neutral-400 focus:border-line bg-panel font-bold ${invalidBorder}`}
-          >
-            <option value="">
-              {schoolCatalogLoading ? 'Loading courses…'
-                : schoolCatalogFailed ? 'Could not load courses. Refresh to retry.'
-                : !selectedLevelId ? 'Select an academic level first'
-                : courses.length ? 'Select a course or strand'
-                : 'No courses assigned for this school and level'}
-            </option>
-            {courses.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.code ? `${c.code} — ` : ''}
-                {c.name}
-              </option>
-            ))}
-          </select>
+            options={courses.map((c) => ({ value: c.id, label: c.code ? `${c.code} — ${c.name}` : c.name, keywords: c.code }))}
+            placeholder={schoolCatalogLoading ? 'Loading courses…'
+              : schoolCatalogFailed ? 'Could not load courses. Refresh to retry.'
+              : !selectedLevelId ? 'Select an academic level first'
+              : courses.length ? 'Type to search, e.g. "accountancy" or "BSA"'
+              : 'No courses assigned for this school and level'}
+            emptyText="No course matches. Check the spelling or try the course code."
+            className={`w-full min-h-[48px] text-sm py-2.5 border border-neutral-400 focus:border-line bg-panel font-bold disabled:opacity-60 ${invalidBorder}`}
+          />
           <RegistrationFieldError field="course" errors={errors} />
         </div>
 
@@ -212,6 +207,7 @@ export const ClientInfoSection: React.FC<ClientInfoSectionProps> = ({
           />
         </div>
       </div>
+      </>)}
     </section>
   );
 };

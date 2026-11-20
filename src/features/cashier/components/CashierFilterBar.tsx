@@ -1,6 +1,12 @@
 import React from 'react';
-import { Clock, CheckCircle2, Banknote, Search } from 'lucide-react';
+import { Clock, CheckCircle2, Banknote, PackageCheck } from 'lucide-react';
 import type { CashierTab } from '../useCashierState';
+import type { Registration } from '../../../types';
+import { ClientGroupFilter } from '../../../components/common/ClientGroupFilter';
+import { StudentDirectoryFilters } from '../../admin/components/StudentDirectoryFilters';
+import {
+  cashierColumns, cashierFilterSections, type CashierColumnId, type CashierFilterKey, type CashierFilters,
+} from '../cashierFilters';
 
 interface CashierFilterBarProps {
   activeTab: CashierTab;
@@ -8,97 +14,85 @@ interface CashierFilterBarProps {
   pendingCount: number;
   paidCount: number;
   balanceCount: number;
+  readyCount: number;
+  /** All orders, for the school / walk-in picker and its counts. */
+  registrations: Registration[];
+  clientGroup: string;
+  onClientGroupChange: (group: string) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
+  filters: CashierFilters;
+  filterOptions: Record<CashierFilterKey, { id: string; label: string }[]>;
+  onToggleFilter: (key: CashierFilterKey, id: string) => void;
+  onClearFilters: () => void;
+  visibleColumns: CashierColumnId[];
+  onToggleColumn: (id: CashierColumnId) => void;
+  onResetColumns: () => void;
 }
 
+const tabs: Array<{
+  id: CashierTab; label: string; icon: typeof Clock; active: string; idle: string; badgeActive: string; badgeIdle: string;
+}> = [
+  { id: 'pending', label: 'Pending', icon: Clock, active: 'bg-obsidian text-gold border-line', idle: 'bg-canvas text-neutral-700 border-neutral-300 hover:border-line', badgeActive: 'bg-gold text-on-gold', badgeIdle: 'bg-neutral-200 text-ink' },
+  { id: 'paid', label: 'Paid', icon: CheckCircle2, active: 'bg-obsidian text-gold border-line', idle: 'bg-canvas text-neutral-700 border-neutral-300 hover:border-line', badgeActive: 'bg-gold text-on-gold', badgeIdle: 'bg-neutral-200 text-ink' },
+  { id: 'balances', label: 'Balances', icon: Banknote, active: 'bg-red-700 text-white border-red-700', idle: 'bg-canvas text-red-700 border-neutral-300 hover:border-red-700', badgeActive: 'bg-panel text-red-700', badgeIdle: 'bg-red-100 text-red-800' },
+  // Orders ready for the client to claim.
+  { id: 'ready', label: 'Ready for Pickup', icon: PackageCheck, active: 'bg-emerald-700 text-white border-emerald-700', idle: 'bg-canvas text-emerald-700 border-neutral-300 hover:border-emerald-700', badgeActive: 'bg-panel text-emerald-700', badgeIdle: 'bg-emerald-100 text-emerald-800' },
+];
+
+/**
+ * Cashier tabs plus the same filter row as Admin → Clients Directory:
+ * Advanced Filters (funnel), a type-to-search school / walk-in picker, and the search box.
+ */
 export const CashierFilterBar: React.FC<CashierFilterBarProps> = ({
-  activeTab,
-  onSelectTab,
-  pendingCount,
-  paidCount,
-  balanceCount,
-  searchQuery,
-  onSearchChange,
+  activeTab, onSelectTab, pendingCount, paidCount, balanceCount, readyCount,
+  registrations, clientGroup, onClientGroupChange, searchQuery, onSearchChange,
+  filters, filterOptions, onToggleFilter, onClearFilters, visibleColumns, onToggleColumn, onResetColumns,
 }) => {
+  const counts: Record<CashierTab, number> = { pending: pendingCount, paid: paidCount, balances: balanceCount, ready: readyCount };
   return (
-    <div className="animate-enter-delay-1 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 bg-panel p-3 border-2 border-line mb-6">
-      <div className="grid grid-cols-3 sm:flex items-center gap-1.5">
-        <button
-          type="button"
-          onClick={() => onSelectTab('pending')}
-          className={`btn-tactile min-h-[42px] flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-wider border cursor-pointer ${
-            activeTab === 'pending'
-              ? 'bg-obsidian text-gold border-line'
-              : 'bg-canvas text-neutral-700 border-neutral-300 hover:border-line'
-          }`}
-        >
-          <Clock className="w-3.5 h-3.5 shrink-0 hidden xs:inline" />
-          <span>Pending</span>
-          <span
-            className={`font-mono px-1.5 py-0.5 text-[10px] font-black ${
-              activeTab === 'pending'
-                ? 'bg-gold text-on-gold'
-                : 'bg-neutral-200 text-ink'
-            }`}
+    // relative z-20: the open filter lists must sit above the table, which also animates in.
+    <div className="animate-enter-delay-1 relative z-20 space-y-3 bg-panel p-3 border-2 border-line mb-6">
+      <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-1.5">
+        {tabs.map(({ id, label, icon: Icon, active, idle, badgeActive, badgeIdle }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onSelectTab(id)}
+            aria-pressed={activeTab === id}
+            className={`btn-tactile min-h-[42px] flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-wider border cursor-pointer ${activeTab === id ? active : idle}`}
           >
-            {pendingCount}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => onSelectTab('paid')}
-          className={`btn-tactile min-h-[42px] flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-wider border cursor-pointer ${
-            activeTab === 'paid'
-              ? 'bg-obsidian text-gold border-line'
-              : 'bg-canvas text-neutral-700 border-neutral-300 hover:border-line'
-          }`}
-        >
-          <CheckCircle2 className="w-3.5 h-3.5 shrink-0 hidden xs:inline" />
-          <span>Paid</span>
-          <span
-            className={`font-mono px-1.5 py-0.5 text-[10px] font-black ${
-              activeTab === 'paid'
-                ? 'bg-gold text-on-gold'
-                : 'bg-neutral-200 text-ink'
-            }`}
-          >
-            {paidCount}
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => onSelectTab('balances')}
-          className={`btn-tactile min-h-[42px] flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 text-[11px] font-black uppercase tracking-wider border cursor-pointer ${
-            activeTab === 'balances'
-              ? 'bg-red-700 text-white border-red-700'
-              : 'bg-canvas text-red-700 border-neutral-300 hover:border-red-700'
-          }`}
-        >
-          <Banknote className="w-3.5 h-3.5 shrink-0 hidden xs:inline" />
-          <span>Balances</span>
-          <span
-            className={`font-mono px-1.5 py-0.5 text-[10px] font-black ${
-              activeTab === 'balances' ? 'bg-panel text-red-700' : 'bg-red-100 text-red-800'
-            }`}
-          >
-            {balanceCount}
-          </span>
-        </button>
+            <Icon className="w-3.5 h-3.5 shrink-0 hidden xs:inline" />
+            <span>{label}</span>
+            <span className={`font-mono px-1.5 py-0.5 text-[10px] font-black ${activeTab === id ? badgeActive : badgeIdle}`}>
+              {counts[id]}
+            </span>
+          </button>
+        ))}
       </div>
 
-      {/* Search Input */}
-      <div className="relative w-full lg:w-80">
-        <Search className="w-4 h-4 absolute left-3.5 top-3.5 text-neutral-500" />
-        <input
-          type="search"
-          placeholder="Search Job № 00001, Name, School..."
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          className="w-full min-h-[42px] text-xs sm:text-sm pl-10 pr-4 py-2 border border-neutral-400 focus:border-line bg-canvas focus:bg-panel font-semibold"
-        />
+      <div className="font-mono text-xs">
+      <StudentDirectoryFilters
+        bare
+        query={searchQuery}
+        onQueryChange={onSearchChange}
+        searchPlaceholder="Search Job № 00001, name, school..."
+        searchLabel="Search job orders"
+        quickFilter={(
+          <div className="w-full sm:w-72 shrink-0">
+            <ClientGroupFilter id="cashier-client-group" value={clientGroup} onChange={onClientGroupChange} registrations={registrations} />
+          </div>
+        )}
+        sections={cashierFilterSections}
+        filters={filters}
+        options={filterOptions}
+        onToggleFilter={onToggleFilter}
+        onClearFilters={onClearFilters}
+        columns={cashierColumns}
+        visibleColumns={visibleColumns}
+        onToggleColumn={onToggleColumn}
+        onResetColumns={onResetColumns}
+      />
       </div>
     </div>
   );

@@ -43,7 +43,7 @@ It connects the studio stations across one workflow.
 
 ```mermaid
 flowchart LR
-    A["1. Registration Kiosk\n(Student enters info & signs)"] --> B["2. Cashier Counter\n(Collects payment & prints 2-copy receipt)"]
+    A["1. Registration Kiosk\n(Student enters info & signs)"] --> B["2. Cashier Counter\n(Collects payment & prints job order / receipt)"]
     B --> C["Photo Floor"]
     B --> M["Makeup / Grooming\n(If purchased)"]
     M --> C
@@ -111,6 +111,7 @@ StudioFlow includes pre-built batch scripts to simplify studio operations:
 | **`scripts\backup.bat`** | Double-click | Creates a timestamped snapshot of the database (`pb_data\`) into `backups\`. |
 | **`scripts\restore.bat`** | Double-click | Restores the database from a previous backup snapshot. |
 | **`scripts\clean_orphans.bat`** | Double-click | Scans and safely prunes empty or cancelled student photo folders on disk. |
+| **`scripts\reset-for-handover.bat`** | Double-click (server closed) | Removes all test data before handover so numbering starts at Job Order 00001 / OR-000001. Backs up first. It can keep the setup (schools, packages, staff) or create a factory-fresh database. |
 
 ---
 
@@ -119,7 +120,7 @@ StudioFlow includes pre-built batch scripts to simplify studio operations:
 | Station | Route | Default Users | Key Responsibilities |
 | :--- | :--- | :--- | :--- |
 | **Registration Kiosk** | `/#/register` | Public (Students) | Select school, course, and pictorial package; dynamic add-on selection; digital signature capture; instant Job Order assignment (`№ 00001`). |
-| **Cashier Counter** | `/#/cashier` | `cashier`, `admin` | Search client by Job Order or name; collect downpayment or full payment; 1-click simultaneous print for **Page 1 (Yellow Customer Copy)** and **Page 2 (White Studio Accounting Copy)**. |
+| **Cashier Counter** | `/#/cashier` | `cashier`, `admin` | Search client by Job Order or name; collect downpayment or full payment with cash received and change; print the **job order sheet** (letter: customer claim stub + studio copy) after the first payment and a **small payment receipt**, a third of a letter sheet (customer + studio copy), after later payments. |
 | **Makeup / Grooming** | `/#/mua` | `mua`, `admin` | MUAs claim, start, and complete preparation. Admins can release a stalled assignment to the waiting queue. |
 | **Photo Floor** | `/#/photographer` | `photographer`, `admin` | Live queue for paid students after any required preparation. **Copy Path** retrieves the assigned folder path. |
 | **Photo Chooser** | `/#/chooser` | `chooser`, `admin` | Search completed shoots, preview photos, confirm selections, and reopen a selection to revise it. |
@@ -170,6 +171,8 @@ C:\StudioFlow_Photos\
                     ├── selected\
                     └── unselected\
 ```
+
+**Camera auto-import:** in **Admin → Camera Import** (or **Set Up** on the Photo Floor), add a camera and choose its output folder on the server PC with **Browse**. Set the same folder as the save folder in the camera's tethering or Wi-Fi transfer software. On the Photo Floor, pick the camera for that device. **Call Client** links the camera to the client, every finished shot moves into the client's job folder within a few seconds, and **Mark Done** sends the last shots and unlinks the camera. Photos taken with no client linked stay in the camera folder until someone sends them to a client.
 
 Use **Copy Path** in the photographer queue to find the server folder for a job order. From a remote station, use your studio's file share for that folder; a local drive path refers to the server's disk. Put finished image exports in the job folder or its `unselected` subfolder. Opening the gallery moves supported exports from the job folder into `unselected`. After confirmation, the server keeps both folders and the saved selection in sync. JPEG, PNG, WebP, GIF, and AVIF exports are supported. RAW files and unrecognized files stay where the photographer placed them. Avoid editing the `selected` and `unselected` folders by hand once selection has started.
 

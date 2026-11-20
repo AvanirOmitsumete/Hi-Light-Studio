@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import {
-  DollarSign,
+  PhilippinePeso,
   Users,
   CheckCircle2,
   AlertCircle,
@@ -9,13 +9,22 @@ import {
   Building,
   Package as PackageIcon,
   Printer,
+  Ban,
+  Undo2,
 } from 'lucide-react';
-import type { Organization, Registration, Package, PaymentRecord } from '../../../types';
+import type { Organization, Registration, Package, PaymentRecord, RefundRecord } from '../../../types';
+import type { RefundRequest } from '../useAdminData';
+import { RefundModal, VoidPaymentModal } from './LedgerActionModals';
+import { PrintRefundSlipModal } from './PrintRefundSlipModal';
 import { formatCurrency, formatClientName } from '../../../utils/formatters';
 import { PrintReceiptModal } from '../../cashier/components/PrintReceiptModal';
 import { DataTable } from '../../../components/common/DataTable';
 import type { DataTableColumn } from '../../../components/common/DataTable';
 import { MuaPerformancePanel } from './MuaPerformancePanel';
+import { clientGroup, clientSummary } from '../../../utils/clientInfo';
+import { overviewMetrics, type OverviewMetrics } from '../overviewMetrics';
+import { buildAudit, isCountedPayment, type AuditGroup } from '../auditData';
+import { studioDayStartUtc, studioMonthStartUtc } from '../../../utils/studioDay';
 
 const transactionDate = new Intl.DateTimeFormat('en-PH', {
   timeZone: 'Asia/Manila', dateStyle: 'medium', timeStyle: 'short',
@@ -25,19 +34,19 @@ const collectionModeLabels: Record<PaymentRecord['payment_type'], string> = {
   balance_settlement: 'Full Settlement',
 };
 
+type Period = 'today' | 'month' | 'all';
+const PERIOD_LABELS: Record<Period, string> = { today: 'Today', month: 'This Month', all: 'All Time' };
+
 interface AdminAnalyticsTabProps {
-  metrics: {
-    totalRegistrations: number;
-    totalPaidShooting: number;
-    totalCompleted: number;
-    totalCollections: number;
-    totalOutstandingBalances: number;
-  };
+  /** All-time figures. */
+  metrics: OverviewMetrics;
   organizations: Organization[];
   registrations: Registration[];
   packages: Package[];
   payments: PaymentRecord[];
-  onExportCsv: () => void;
+  refunds: RefundRecord[];
+  onVoidPayment: (paymentId: string, reason: string) => Promise<void>;
+  onRefund: (refund: RefundRequest) => Promise<RefundRecord>;
 }
 
 export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
@@ -46,12 +55,31 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
   registrations,
   packages,
   payments,
-  onExportCsv,
+  refunds,
+  onVoidPayment,
+  onRefund,
 }) => {
+  // Cards: today / this month / all time. The ledger check below always uses all-time totals,
+  // because payments in a period can belong to job orders from earlier periods.
+  const [period, setPeriod] = useState<Period>('all');
+  const since = period === 'today' ? studioDayStartUtc() : period === 'month' ? studioMonthStartUtc() : undefined;
+  const shown = period === 'all' ? metrics : overviewMetrics(registrations, payments, refunds, since);
+  const periodWords = { today: 'today', month: 'this month', all: 'to date' }[period];
+  const periodNote = period === 'all'
+    ? 'Everything since the system started.'
+    : `${period === 'today' ? 'Since midnight' : 'Since the 1st of the month'} (Philippine time). Payments count by the day they were received, job orders by the day they were made.`;
   const [filterSchool, setFilterSchool] = useState<string>('all');
   const [filterPaymentStatus, setFilterPaymentStatus] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [receiptRegistration, setReceiptRegistration] = useState<Registration | null>(null);
+  const [receiptTarget, setReceiptTarget] = useState<{ registration: Registration; paymentId: string } | null>(null);
+  const [voidTarget, setVoidTarget] = useState<{ registration: Registration; payment: PaymentRecord } | null>(null);
+  const [refundTarget, setRefundTarget] = useState<{ registration: Registration; refundable: number } | null>(null);
+  const [slipTarget, setSlipTarget] = useState<{ registration: Registration; refund: RefundRecord; justRecorded?: boolean } | null>(null);
+  const refundsByRegistration = useMemo(() => {
+    const grouped = new Map<string, RefundRecord[]>();
+    for (const refund of refunds) grouped.set(refund.registration, [...(grouped.get(refund.registration) ?? []), refund]);
+    return grouped;
+  }, [refunds]);
 
   const paymentsByRegistration = useMemo(() => {
     const grouped = new Map<string, PaymentRecord[]>();
@@ -67,80 +95,70 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
   }, [payments]);
   const ledgerRows = useMemo(() => registrations.map((registration) => {
     const transactions = paymentsByRegistration.get(registration.id) ?? [];
-    const collected = transactions.reduce((sum, payment) =>
-      payment.status === 'voided' || payment.status === 'refunded' ? sum : sum + payment.amount, 0);
+    const orderRefunds = refundsByRegistration.get(registration.id) ?? [];
+    const cents = (value: number) => Math.round(value * 100);
+    const paid = transactions.reduce((sum, payment) => (isCountedPayment(payment) ? sum + cents(payment.amount) : sum), 0);
+    const refunded = orderRefunds.reduce((sum, refund) => sum + cents(refund.amount), 0);
+    const net = paid - refunded;
+    const total = cents(registration.total_amount || 0);
+    const cancelled = registration.status === 'cancelled';
+    const overpaid = cancelled ? 0 : Math.max(0, net - total);
     return {
       registration,
       transactions,
-      collected,
-      balance: Math.max(0, (registration.total_amount || 0) - collected),
+      orderRefunds,
+      cancelled,
+      collected: net / 100,
+      refunded: refunded / 100,
+      balance: cancelled ? 0 : Math.max(0, total - net) / 100,
+      overpaid: overpaid / 100,
+      // Most that can be refunded now: everything held on a cancelled order, the overpayment otherwise.
+      refundable: (cancelled ? Math.max(0, net) : overpaid) / 100,
     };
-  }), [registrations, paymentsByRegistration]);
+  }), [registrations, paymentsByRegistration, refundsByRegistration]);
 
-  // Total Invoiced / Gross Billed
-  const totalGrossBilled = useMemo(
-    () => registrations.reduce((sum, r) => sum + (r.total_amount || 0), 0),
-    [registrations]
+  // Same rules as the cards and the Audit Export (auditData.ts), for the chosen period.
+  const audit = useMemo(
+    () => buildAudit(registrations, payments, refunds, since, { organizations, packages }),
+    [registrations, payments, refunds, since, organizations, packages],
   );
-
-  // Reconciliation Check (T049 / AC023)
-  const isReconciled = useMemo(() => {
-    const calcExpected = metrics.totalCollections + metrics.totalOutstandingBalances;
-    return Math.abs(totalGrossBilled - calcExpected) < 0.01;
-  }, [totalGrossBilled, metrics.totalCollections, metrics.totalOutstandingBalances]);
-
-  // Breakdown by School
-  const schoolBreakdown = useMemo(() => {
-    return organizations.map((org) => {
-      const orgRegs = registrations.filter((r) => r.organization === org.id);
-      const billed = orgRegs.reduce((sum, r) => sum + (r.total_amount || 0), 0);
-      const orgRows = ledgerRows.filter(({ registration }) => registration.organization === org.id);
-      const collected = orgRows.reduce((sum, row) => sum + row.collected, 0);
-      const balance = orgRows.reduce((sum, row) => sum + row.balance, 0);
-      return {
-        id: org.id,
-        code: org.code || 'ORG',
-        name: org.name,
-        count: orgRegs.length,
-        billed,
-        collected,
-        balance,
-      };
-    });
-  }, [organizations, registrations, ledgerRows]);
-
-  // Breakdown by Package
-  const packageBreakdown = useMemo(() => {
-    return packages.map((pkg) => {
-      const pkgRegs = registrations.filter((r) => r.package === pkg.id);
-      const billed = pkgRegs.reduce((sum, r) => sum + (r.total_amount || 0), 0);
-      const collected = ledgerRows.filter(({ registration }) => registration.package === pkg.id)
-        .reduce((sum, row) => sum + row.collected, 0);
-      return {
-        id: pkg.id,
-        code: pkg.code,
-        name: pkg.name,
-        count: pkgRegs.length,
-        billed,
-        collected,
-      };
-    });
-  }, [packages, registrations, ledgerRows]);
+  const isReconciled = audit.ordersBalanced && audit.paymentsBalanced;
+  // Lists show only schools / packages with something in the period; totals equal the cards.
+  const hasActivity = (group: AuditGroup) => Boolean(group.count || group.billed || group.collected || group.balance);
+  const activeSchools = audit.bySchool.filter(hasActivity);
+  const hiddenSchools = audit.bySchool.length - activeSchools.length;
+  const activePackages = audit.byPackage.filter(hasActivity);
+  const [exportingAudit, setExportingAudit] = useState(false);
+  const exportAudit = async () => {
+    if (exportingAudit) return;
+    setExportingAudit(true);
+    try {
+      const { downloadAuditWorkbook } = await import('../auditWorkbook');
+      await downloadAuditWorkbook(audit, { label: PERIOD_LABELS[period], since });
+    } catch (err) {
+      console.error('Audit export failed:', err);
+      window.alert('Could not create the audit report. Please try again.');
+    } finally {
+      setExportingAudit(false);
+    }
+  };
 
   // Filtered Financial Ledger
   const filteredLedger = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    return ledgerRows.filter(({ registration: r, collected, balance }) => {
+    return ledgerRows.filter(({ registration: r, collected, balance, overpaid, cancelled }) => {
       if (filterSchool !== 'all' && r.organization !== filterSchool) return false;
       if (filterPaymentStatus !== 'all') {
         if (filterPaymentStatus === 'fully_paid' && balance > 0) return false;
         if (filterPaymentStatus === 'unpaid' && collected > 0) return false;
         if (filterPaymentStatus === 'has_balance' && balance <= 0) return false;
+        if (filterPaymentStatus === 'refund_due' && overpaid <= 0) return false;
+        if (filterPaymentStatus === 'cancelled' && !cancelled) return false;
       }
       if (q) {
         const fullName = `${r.given_name} ${r.family_name}`.toLowerCase();
         const jo = (r.job_order_no || '').toLowerCase();
-        const schoolName = (r.expand?.organization?.name || '').toLowerCase();
+        const schoolName = clientSummary(r, true).toLowerCase();
         if (!fullName.includes(q) && !jo.includes(q) && !schoolName.includes(q)) return false;
       }
       return true;
@@ -148,37 +166,49 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
   }, [ledgerRows, filterSchool, filterPaymentStatus, searchQuery]);
 
   type LedgerRow = typeof ledgerRows[number];
+  // Settlement label for a job order; cancelled and overpaid orders are called out.
+  const settlementOf = ({ cancelled, balance, collected, overpaid }: LedgerRow) => {
+    if (cancelled) return { rank: 4, label: collected > 0 ? `Cancelled · ${formatCurrency(collected, { exact: true })} held` : 'Cancelled', tone: 'bg-neutral-200 text-neutral-700' };
+    if (overpaid > 0) return { rank: 3, label: `Refund due ${formatCurrency(overpaid, { exact: true })}`, tone: 'border border-red-400 bg-red-100 text-red-800' };
+    if (balance <= 0) return { rank: 2, label: 'Fully paid', tone: 'border border-emerald-400 bg-emerald-100 text-emerald-800' };
+    if (collected > 0) return { rank: 1, label: 'Partial', tone: 'border border-amber-400 bg-amber-100 text-amber-800' };
+    return { rank: 0, label: 'Unpaid', tone: 'bg-neutral-200 text-neutral-700' };
+  };
   const ledgerColumns: DataTableColumn<LedgerRow>[] = [
     { id: 'job', header: 'JO №', sortable: true, accessor: ({ registration }) => registration.job_order_no, cellClassName: 'font-black text-red-600' },
-    { id: 'name', header: 'Student Name', sortable: true, accessor: ({ registration }) => `${registration.family_name} ${registration.given_name}`,
+    { id: 'name', header: 'Client Name', sortable: true, accessor: ({ registration }) => `${registration.family_name} ${registration.given_name}`,
       cell: ({ registration }) => formatClientName(registration), cellClassName: 'font-bold uppercase' },
-    { id: 'school', header: 'School', sortable: true, accessor: ({ registration }) => registration.expand?.organization?.code || registration.expand?.organization?.name,
-      cell: ({ registration }) => registration.expand?.organization?.code || 'ORG', cellClassName: 'text-neutral-600' },
+    { id: 'school', header: 'School / Client', sortable: true, accessor: ({ registration }) => clientGroup(registration),
+      cell: ({ registration }) => clientGroup(registration) || 'ORG', cellClassName: 'text-neutral-600' },
     { id: 'package', header: 'Package', sortable: true, accessor: ({ registration }) => registration.expand?.package?.code,
       cell: ({ registration }) => registration.expand?.package?.code || 'PKG' },
     { id: 'billed', header: 'Billed', sortable: true, accessor: ({ registration }) => registration.total_amount, align: 'right',
       cell: ({ registration }) => formatCurrency(registration.total_amount), cellClassName: 'font-bold' },
-    { id: 'collected', header: 'Collected', sortable: true, accessor: ({ collected }) => collected, align: 'right',
-      cell: ({ collected }) => formatCurrency(collected), cellClassName: 'font-bold text-emerald-700' },
+    { id: 'collected', header: 'Collected (net)', sortable: true, accessor: ({ collected }) => collected, align: 'right',
+      cell: ({ collected, refunded }) => (
+        <>
+          <div>{formatCurrency(collected)}</div>
+          {refunded > 0 && <div className="text-[9px] font-normal text-neutral-500">after {formatCurrency(refunded, { exact: true })} refunded</div>}
+        </>
+      ), cellClassName: 'font-bold text-emerald-700' },
     { id: 'balance', header: 'Balance', sortable: true, accessor: ({ balance }) => balance, align: 'right', cellClassName: 'font-black',
       cell: ({ balance }) => balance > 0 ? <span className="text-red-600">{formatCurrency(balance)}</span> : <span className="text-emerald-700">₱0.00</span> },
     { id: 'status', header: 'Settlement Status', sortable: true, align: 'center',
-      accessor: ({ balance, collected }) => balance <= 0 ? 2 : collected > 0 ? 1 : 0,
-      cell: ({ balance, collected }) => (
-        <span className={`whitespace-nowrap px-2 py-0.5 text-[9px] font-black uppercase ${balance <= 0
-          ? 'border border-emerald-400 bg-emerald-100 text-emerald-800'
-          : collected > 0 ? 'border border-amber-400 bg-amber-100 text-amber-800' : 'bg-neutral-200 text-neutral-700'}`}>
-          {balance <= 0 ? 'Fully paid' : collected > 0 ? 'Partial' : 'Unpaid'}
-        </span>
-      ),
+      accessor: (row) => settlementOf(row).rank,
+      cell: (row) => {
+        const { label, tone } = settlementOf(row);
+        return <span className={`whitespace-nowrap px-2 py-0.5 text-[9px] font-black uppercase ${tone}`}>{label}</span>;
+      },
     },
   ];
 
-  function renderHistory({ registration, transactions }: LedgerRow) {
+  function renderHistory(row: LedgerRow) {
+    const { registration, transactions, orderRefunds, refundable, cancelled } = row;
+    const released = registration.status === 'released';
     let runningTotal = 0;
     // Balances follow transaction chronology even when the display is sorted by another column.
     const history = transactions.map((payment) => {
-      if (payment.status !== 'voided' && payment.status !== 'refunded') runningTotal += payment.amount;
+      if (isCountedPayment(payment)) runningTotal += payment.amount;
       return { payment, runningTotal, remaining: Math.max(0, registration.total_amount - runningTotal) };
     });
     const columns: DataTableColumn<typeof history[number]>[] = [
@@ -198,17 +228,52 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
         cell: ({ remaining }) => formatCurrency(remaining, { exact: true }) },
       { id: 'cashier', header: 'Cashier', sortable: true, accessor: ({ payment }) => payment.cashier_name },
       { id: 'remarks', header: 'Reference / Remarks', sortable: true, accessor: ({ payment }) => payment.remarks, cellClassName: 'max-w-52 whitespace-normal' },
-      { id: 'status', header: 'Status', sortable: true, accessor: ({ payment }) => payment.status || 'completed', cellClassName: 'font-bold uppercase' },
-      { id: 'actions', header: 'Actions', cell: () => (
-        <button type="button" onClick={() => setReceiptRegistration(registration)}
-          className="inline-flex items-center gap-1 border border-line bg-gold px-2 py-1 font-black uppercase">
-          <Printer className="size-3" /> Reprint
-        </button>
+      { id: 'status', header: 'Status', sortable: true, accessor: ({ payment }) => payment.status || 'completed', cellClassName: 'font-bold uppercase',
+        cell: ({ payment }) => (
+          <div className="whitespace-normal max-w-56">
+            <span className={payment.status === 'voided' ? 'text-red-600' : ''}>{payment.status || 'completed'}</span>
+            {payment.status === 'voided' && (
+              <div className="text-[9px] normal-case font-normal text-neutral-600">
+                {payment.voided_at ? transactionDate.format(new Date(payment.voided_at.replace(' ', 'T'))) : ''}
+                {payment.voided_by ? ` by ${payment.voided_by}` : ''}{payment.void_reason ? `: ${payment.void_reason}` : ''}
+              </div>
+            )}
+            {payment.status === 'refunded' && <div className="text-[9px] normal-case font-normal text-neutral-600">old method</div>}
+          </div>
+        ) },
+      { id: 'actions', header: 'Actions', cell: ({ payment }) => (
+        <div className="flex gap-1">
+          <button type="button" onClick={() => setReceiptTarget({ registration, paymentId: payment.id })}
+            className="inline-flex items-center gap-1 border border-line bg-gold px-2 py-1 font-black uppercase cursor-pointer">
+            <Printer className="size-3" /> Reprint
+          </button>
+          {(payment.status || 'completed') === 'completed' && !released && (
+            <button type="button" onClick={() => setVoidTarget({ registration, payment })}
+              title="Void a payment recorded by mistake"
+              className="inline-flex items-center gap-1 border border-red-600 text-red-700 bg-panel px-2 py-1 font-black uppercase cursor-pointer">
+              <Ban className="size-3" /> Void
+            </button>
+          )}
+        </div>
       ) },
     ];
     return (
       <>
-        <div className="mb-2 text-[10px] font-black uppercase tracking-wider">Payment Transaction History</div>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[10px] font-black uppercase tracking-wider">Payment Transaction History</span>
+          {refundable > 0 && (
+            <button type="button" onClick={() => setRefundTarget({ registration, refundable })}
+              className="inline-flex items-center gap-1 border border-line bg-obsidian text-gold px-2.5 py-1 text-[10px] font-black uppercase cursor-pointer">
+              <Undo2 className="size-3" /> Refund {cancelled ? '(cancelled order)' : '(overpaid)'} · up to {formatCurrency(refundable, { exact: true })}
+            </button>
+          )}
+        </div>
+        {cancelled && registration.cancel_reason && (
+          <p className="mb-2 text-[10px] text-neutral-600">
+            Cancelled {registration.cancelled_at ? transactionDate.format(new Date(registration.cancelled_at.replace(' ', 'T'))) : ''}
+            {registration.cancelled_by ? ` by ${registration.cancelled_by}` : ''}: {registration.cancel_reason}
+          </p>
+        )}
         <DataTable
           label={`Payment history for JO № ${registration.job_order_no}`}
           rows={history}
@@ -221,25 +286,81 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
           tableClassName="whitespace-nowrap text-[10px]!"
           headerClassName="uppercase"
         />
+        {orderRefunds.length > 0 && (
+          <div className="mt-3">
+            <div className="mb-1 text-[10px] font-black uppercase tracking-wider">Refunds</div>
+            <table className="w-full text-[10px] border border-line">
+              <thead>
+                <tr className="text-left uppercase">
+                  {['Date & Time', 'Refund №', 'Method', 'Amount', 'Given by', 'Reason', 'Slip'].map((head) => (
+                    <th key={head} className="px-2 py-1 border-b border-line">{head}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {orderRefunds.map((refund) => (
+                  <tr key={refund.id}>
+                    <td className="px-2 py-1">{transactionDate.format(new Date(refund.created.replace(' ', 'T')))}</td>
+                    <td className="px-2 py-1 font-bold">{refund.refund_no}</td>
+                    <td className="px-2 py-1 uppercase">{refund.method}</td>
+                    <td className="px-2 py-1 font-bold text-red-700">−{formatCurrency(refund.amount, { exact: true })}</td>
+                    <td className="px-2 py-1">{refund.refunded_by}</td>
+                    <td className="px-2 py-1 whitespace-normal">{refund.reason}</td>
+                    <td className="px-2 py-1">
+                      <button type="button" onClick={() => setSlipTarget({ registration, refund })}
+                        title={refund.signature ? 'Reprint the signed refund slip' : 'Have the client sign on screen, then print the refund slip'}
+                        className="inline-flex items-center gap-1 border border-line bg-gold px-2 py-1 font-black uppercase cursor-pointer">
+                        <Printer className="size-3" /> {refund.signature ? 'Print Slip' : 'Sign / Print'}
+                      </button>
+                      {refund.signature && <span className="ml-1 text-[9px] font-bold uppercase text-emerald-700">✓ Signed</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </>
     );
   }
 
   return (
     <div className="space-y-6 animate-enter">
+      {/* Period switch for the cards (dates in Philippine time). */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div role="group" aria-label="Period" className="inline-flex border-2 border-line bg-panel shadow-lux font-mono text-xs font-black uppercase">
+          {(Object.keys(PERIOD_LABELS) as Period[]).map((id) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={period === id}
+              onClick={() => setPeriod(id)}
+              className={`px-4 py-2 cursor-pointer border-r border-line last:border-r-0 ${period === id ? 'bg-obsidian text-gold' : 'text-ink hover:bg-gold-wash'}`}
+            >
+              {PERIOD_LABELS[id]}
+            </button>
+          ))}
+        </div>
+        <span className="font-mono text-[11px] text-neutral-500">{periodNote}</span>
+      </div>
+
       {/* KPI Overview Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
         <div className="bg-obsidian text-white border-2 border-line shadow-lux-gold p-5">
           <div className="flex items-center justify-between text-gold mb-2">
             <span className="font-mono text-[10px] font-black uppercase tracking-wider">
-              Total Collections
+              {period === 'today' ? 'Collected Today' : period === 'month' ? 'Collected This Month' : 'Total Collections'}
             </span>
-            <DollarSign className="w-4 h-4" />
+            <PhilippinePeso className="w-4 h-4" />
           </div>
           <div className="font-mono text-2xl sm:text-3xl font-black text-gold">
-            {formatCurrency(metrics.totalCollections)}
+            {formatCurrency(shown.totalCollections)}
           </div>
-          <p className="text-[11px] text-neutral-400 mt-1">Verified cashier receipts</p>
+          <p className="text-[11px] text-neutral-400 mt-1">
+            {shown.totalRefunds > 0
+              ? `${formatCurrency(shown.totalReceived, { exact: true })} received − ${formatCurrency(shown.totalRefunds, { exact: true })} refunded ${periodWords}`
+              : `Payments received ${periodWords} (voided excluded)`}
+          </p>
         </div>
 
         <div className="bg-panel border-2 border-line shadow-lux p-5">
@@ -250,9 +371,12 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
             <Users className="w-4 h-4 text-ink" />
           </div>
           <div className="font-mono text-2xl sm:text-3xl font-black text-ink">
-            {formatCurrency(totalGrossBilled)}
+            {formatCurrency(shown.totalGrossInvoiced)}
           </div>
-          <p className="text-[11px] text-neutral-500 mt-1">{metrics.totalRegistrations} registered clients</p>
+          <p className="text-[11px] text-neutral-500 mt-1">
+            Job orders made {periodWords} · {shown.totalRegistrations} client{shown.totalRegistrations === 1 ? '' : 's'}
+            {shown.cancelledCount > 0 && ` (${shown.cancelledCount} cancelled not counted)`}
+          </p>
         </div>
 
         <div className="bg-panel border-2 border-line shadow-lux p-5">
@@ -263,9 +387,14 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
             <AlertCircle className="w-4 h-4 text-red-600" />
           </div>
           <div className="font-mono text-2xl sm:text-3xl font-black text-red-600">
-            {formatCurrency(metrics.totalOutstandingBalances)}
+            {formatCurrency(shown.totalOutstandingBalances)}
           </div>
-          <p className="text-[11px] text-neutral-500 mt-1">Due before print release</p>
+          <p className="text-[11px] text-neutral-500 mt-1">
+            {period === 'all' ? 'Still to collect from active orders' : `Still unpaid on the job orders made ${periodWords}`}
+            {shown.totalRefundDue > 0 && (
+              <span className="block text-red-600 font-bold">Refund due to clients: {formatCurrency(shown.totalRefundDue, { exact: true })} (ledger filter “Refund Due”)</span>
+            )}
+          </p>
         </div>
 
         <div className="bg-panel border-2 border-line shadow-lux p-5">
@@ -276,10 +405,10 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
           </div>
           <div className="font-mono text-2xl sm:text-3xl font-black text-ink">
-            {metrics.totalCompleted}
+            {shown.totalCompleted}
           </div>
           <p className="text-[11px] text-neutral-500 mt-1">
-            {metrics.totalPaidShooting} in studio queue
+            {period === 'all' ? 'Photographed to date' : `Of the job orders made ${periodWords}`} · {metrics.totalPaidShooting} waiting or on set now
           </p>
         </div>
       </div>
@@ -293,18 +422,22 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
         <div className="flex items-center gap-2 font-bold">
           <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-700" />
           <span>
-            {isReconciled
-              ? `Ledger Balanced: Gross (${formatCurrency(totalGrossBilled)}) = Collections (${formatCurrency(metrics.totalCollections)}) + Balances (${formatCurrency(metrics.totalOutstandingBalances)})`
-              : `Discrepancy: Gross (${formatCurrency(totalGrossBilled)}) does not match Collections + Receivables`}
+            {!isReconciled
+              ? `Discrepancy (${PERIOD_LABELS[period]}): the totals do not add up. Export the audit report and check the Summary sheet.`
+              : period === 'all'
+                ? `Ledger Balanced: Gross (${formatCurrency(audit.totals.gross, { exact: true })}) = Collections (${formatCurrency(audit.totals.collections, { exact: true })}) + Balances (${formatCurrency(audit.totals.outstanding, { exact: true })})`
+                : `${PERIOD_LABELS[period]} Balanced: Gross (${formatCurrency(audit.totals.gross, { exact: true })}) = Paid (${formatCurrency(audit.totals.paidOnOrders, { exact: true })}) + Balances (${formatCurrency(audit.totals.outstanding, { exact: true })}) · Collections (${formatCurrency(audit.totals.collections, { exact: true })}) include ${formatCurrency(audit.totals.collectionsOnEarlierOrders, { exact: true })} for older job orders`}
           </span>
         </div>
         <button
           type="button"
-          onClick={onExportCsv}
-          className="btn-tactile shrink-0 px-3 py-1 bg-obsidian text-gold font-black uppercase text-[10px] tracking-wider flex items-center gap-1.5 cursor-pointer"
+          onClick={() => void exportAudit()}
+          disabled={exportingAudit}
+          title={`Printable Excel report for ${PERIOD_LABELS[period]}: summary with checks, every job order and every receipt.`}
+          className="btn-tactile shrink-0 px-3 py-1 bg-obsidian text-gold font-black uppercase text-[10px] tracking-wider flex items-center gap-1.5 cursor-pointer disabled:opacity-60 disabled:cursor-wait"
         >
           <FileSpreadsheet className="w-3.5 h-3.5" />
-          <span>Audit Export</span>
+          <span>{exportingAudit ? 'Preparing…' : `Audit Export (${PERIOD_LABELS[period]})`}</span>
         </button>
       </div>
 
@@ -317,11 +450,12 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
               <Building className="w-4 h-4 text-gold" />
               <span>Collections by School</span>
             </h3>
-            <span className="font-mono text-[10px] text-neutral-500">{organizations.length} Schools</span>
+            <span className="font-mono text-[10px] text-neutral-500">{PERIOD_LABELS[period]}</span>
           </div>
           <div className="divide-y divide-neutral-200">
-            {schoolBreakdown.map((s) => (
-              <div key={s.id} className="py-2.5 flex items-center justify-between text-xs font-mono">
+            {activeSchools.length === 0 && <p className="py-3 text-xs text-neutral-500">No payments or job orders {periodWords}.</p>}
+            {activeSchools.map((s) => (
+              <div key={s.key} className="py-2.5 flex items-center justify-between text-xs font-mono">
                 <div>
                   <span className="font-black text-ink">{s.code}</span>
                   <span className="text-neutral-500 text-[11px] block truncate max-w-[200px]">{s.name}</span>
@@ -333,12 +467,24 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
                       Bal: {formatCurrency(s.balance)}
                     </span>
                   ) : (
-                    <span className="text-[10px] text-emerald-600 font-bold block">100% Settled</span>
+                    <span className="text-[10px] text-emerald-600 font-bold block">{s.count ? 'No balance' : 'Payments only'}</span>
                   )}
                 </div>
               </div>
             ))}
+            {activeSchools.length > 0 && (
+              <div className="pt-2.5 flex items-center justify-between text-xs font-mono font-black border-t-2 border-line">
+                <span>TOTAL</span>
+                <div className="text-right">
+                  <div className="text-ink">{formatCurrency(audit.totals.collections, { exact: true })}</div>
+                  <span className="text-[10px] text-red-600 block">Bal: {formatCurrency(audit.totals.outstanding, { exact: true })}</span>
+                </div>
+              </div>
+            )}
           </div>
+          {hiddenSchools > 0 && (
+            <p className="mt-2 text-[10px] text-neutral-500">{hiddenSchools} school{hiddenSchools === 1 ? '' : 's'} with nothing {periodWords} not shown.</p>
+          )}
         </div>
 
         {/* Package Revenue */}
@@ -348,21 +494,31 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
               <PackageIcon className="w-4 h-4 text-gold" />
               <span>Revenue by Package</span>
             </h3>
-            <span className="font-mono text-[10px] text-neutral-500">{packages.length} Packages</span>
+            <span className="font-mono text-[10px] text-neutral-500">{PERIOD_LABELS[period]} · job orders made</span>
           </div>
           <div className="divide-y divide-neutral-200">
-            {packageBreakdown.map((pkg) => (
-              <div key={pkg.id} className="py-2.5 flex items-center justify-between text-xs font-mono">
+            {activePackages.length === 0 && <p className="py-3 text-xs text-neutral-500">No job orders {periodWords}.</p>}
+            {activePackages.map((pkg) => (
+              <div key={pkg.key} className="py-2.5 flex items-center justify-between text-xs font-mono">
                 <div>
                   <span className="font-black text-ink">{pkg.code}</span>
                   <span className="text-neutral-500 text-[11px] block truncate max-w-[200px]">{pkg.name}</span>
                 </div>
                 <div className="text-right">
                   <div className="font-black text-ink">{formatCurrency(pkg.billed)}</div>
-                  <span className="text-[10px] text-neutral-500 block">{pkg.count} orders</span>
+                  <span className="text-[10px] text-neutral-500 block">{pkg.count} order{pkg.count === 1 ? '' : 's'}</span>
                 </div>
               </div>
             ))}
+            {activePackages.length > 0 && (
+              <div className="pt-2.5 flex items-center justify-between text-xs font-mono font-black border-t-2 border-line">
+                <span>TOTAL (= Gross Invoiced)</span>
+                <div className="text-right">
+                  <div className="text-ink">{formatCurrency(audit.totals.gross, { exact: true })}</div>
+                  <span className="text-[10px] text-neutral-500 block">{audit.totals.activeOrders} orders</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -421,16 +577,47 @@ export const AdminAnalyticsTab: React.FC<AdminAnalyticsTabProps> = ({
                 <option value="has_balance">With Outstanding Balance</option>
                 <option value="fully_paid">Fully Paid</option>
                 <option value="unpaid">Unpaid</option>
+                <option value="refund_due">Refund Due (overpaid)</option>
+                <option value="cancelled">Cancelled</option>
               </select>
             </div>
           </div>
         )}
       />
-      {receiptRegistration && (
+      {receiptTarget && (
         <PrintReceiptModal
-          registration={receiptRegistration}
+          registration={receiptTarget.registration}
+          paymentId={receiptTarget.paymentId}
           cashierName="Administrator"
-          onClose={() => setReceiptRegistration(null)}
+          onClose={() => setReceiptTarget(null)}
+        />
+      )}
+      {voidTarget && (
+        <VoidPaymentModal
+          payment={voidTarget.payment}
+          registration={voidTarget.registration}
+          onClose={() => setVoidTarget(null)}
+          onVoid={onVoidPayment}
+        />
+      )}
+      {refundTarget && (
+        <RefundModal
+          registration={refundTarget.registration}
+          refundable={refundTarget.refundable}
+          onClose={() => setRefundTarget(null)}
+          onRefund={onRefund}
+          onRecorded={(refund) => {
+            setSlipTarget({ registration: refundTarget.registration, refund, justRecorded: true });
+            setRefundTarget(null);
+          }}
+        />
+      )}
+      {slipTarget && (
+        <PrintRefundSlipModal
+          registration={slipTarget.registration}
+          refund={slipTarget.refund}
+          justRecorded={slipTarget.justRecorded}
+          onClose={() => setSlipTarget(null)}
         />
       )}
     </div>

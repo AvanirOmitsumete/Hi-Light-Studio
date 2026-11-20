@@ -5,13 +5,25 @@ import { useToast } from '../../context/ToastContext';
 import type {
   Organization, Level, Course, SchoolCourse, AssignSchoolCourse, Package, AddOn,
   Registration, MasterListItem, StaffUser, StaffRole,
-  FramingStatus, PhotoStatus, PaymentRecord,
+  ProductionStatus, ProductionUpdateResult, PhotoStatus, PaymentRecord, RefundRecord,
 } from '../../types';
 import { parseRosterCsv, exportRegistrationsToCsv } from '../../utils/csv';
 import { PROTECTED_SYSTEM_USERNAMES } from '../../constants/studio';
-import type { StudentExcelData } from './studentExcel';
+import { overviewMetrics } from './overviewMetrics';
+import type { DateRange, OverallScope, StudentExcelData } from './studentExcel';
 
-export type AdminTab = 'metrics' | 'orgs' | 'packages' | 'roster' | 'staff' | 'framing' | 'students' | 'workflow';
+export type PackageKind = 'school' | 'walkin' | 'both';
+
+/** Body of POST /api/studioflow/refunds. clientKey makes a retried request return the same refund. */
+export interface RefundRequest {
+  registrationId: string;
+  amount: number;
+  method: RefundRecord['method'];
+  reason: string;
+  clientKey: string;
+}
+
+export type AdminTab = 'metrics' | 'orgs' | 'packages' | 'roster' | 'staff' | 'framing' | 'students' | 'workflow' | 'camera' | 'clients';
 
 const excelUnavailable = 'The connected PocketBase server did not return an Excel report. Restart it with the latest StudioFlow hooks and migrations, then try again.';
 
@@ -31,6 +43,7 @@ export function useAdminData() {
   const [masterList, setMasterList] = useState<MasterListItem[]>([]);
   const [staffAccounts, setStaffAccounts] = useState<StaffUser[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
+  const [refunds, setRefunds] = useState<RefundRecord[]>([]);
   const [exportingExcel, setExportingExcel] = useState(false);
 
   // Form States
@@ -42,6 +55,7 @@ export function useAdminData() {
   const [newPkgAmount, setNewPkgAmount] = useState<number>(1000);
   const [newPkgPhotoLimit, setNewPkgPhotoLimit] = useState(0);
   const [newPkgRequiresMua, setNewPkgRequiresMua] = useState(false);
+  const [newPkgKind, setNewPkgKind] = useState<PackageKind>('school');
   const [newPkgMuaTypes, setNewPkgMuaTypes] = useState<string[]>([]);
   const [newPkgInclusions, setNewPkgInclusions] = useState('');
 
@@ -57,11 +71,11 @@ export function useAdminData() {
 
   const loadAllData = useCallback(async () => {
     try {
-      const [regsRes, orgsRes, levelsRes, coursesRes, schoolCoursesRes, pkgsRes, addonsRes, rosterRes, usersRes, paymentsRes] =
+      const [regsRes, orgsRes, levelsRes, coursesRes, schoolCoursesRes, pkgsRes, addonsRes, rosterRes, usersRes, paymentsRes, refundsRes] =
         await Promise.all([
           pb.collection('registrations').getFullList<Registration>({
             sort: '-created',
-            expand: 'organization,level,course,package',
+            expand: 'organization,level,course,package,session_type',
             requestKey: null,
           }),
           pb.collection('organizations').getFullList<Organization>({ requestKey: null }),
@@ -73,6 +87,8 @@ export function useAdminData() {
           pb.collection('master_lists').getFullList<MasterListItem>({ requestKey: null }),
           pb.collection('users').getFullList<StaffUser>({ requestKey: null }).catch(() => []),
           pb.collection('payments').getFullList<PaymentRecord>({ sort: 'created', requestKey: null }),
+          // An older server without the refunds collection: treat as no refunds.
+          pb.collection('refunds').getFullList<RefundRecord>({ sort: 'created', requestKey: null }).catch(() => []),
         ]);
 
       setRegistrations(regsRes);
@@ -86,6 +102,7 @@ export function useAdminData() {
       setMasterList(rosterRes);
       setStaffAccounts(usersRes);
       setPayments(paymentsRes);
+      setRefunds(refundsRes);
       if (orgsRes.length > 0 && !rosterOrgId) setRosterOrgId(orgsRes[0].id);
     } catch (err) {
       if (err && typeof err === 'object' && 'isAbort' in err && err.isAbort) return;
@@ -105,33 +122,20 @@ export function useAdminData() {
     pb.collection('payments').subscribe('*', () => {
       loadAllData();
     }).catch((error) => console.error('Could not subscribe to payment updates:', error));
+    pb.collection('refunds').subscribe('*', () => {
+      loadAllData();
+    }).catch((error) => console.error('Could not subscribe to refund updates:', error));
     return () => {
       pb.collection('registrations').unsubscribe('*');
       pb.collection('packages').unsubscribe('*');
       pb.collection('payments').unsubscribe('*');
+      pb.collection('refunds').unsubscribe('*');
     };
   }, [loadAllData]);
 
   // Metrics Calculations
-  const metrics = useMemo(() => {
-    const totalRegistrations = registrations.length;
-    const totalPaidShooting = registrations.filter((r) => r.status !== 'pending_payment').length;
-    const totalCompleted = registrations.filter(
-      (r) => r.status === 'done_shooting' || r.status === 'completed'
-    ).length;
-    const totalCollections = payments.reduce((sum, payment) =>
-      payment.status === 'voided' || payment.status === 'refunded' ? sum : sum + payment.amount, 0);
-    const totalOutstandingBalances = Math.max(0,
-      registrations.reduce((sum, r) => sum + (r.total_amount || 0), 0) - totalCollections);
-
-    return {
-      totalRegistrations,
-      totalPaidShooting,
-      totalCompleted,
-      totalCollections,
-      totalOutstandingBalances,
-    };
-  }, [registrations, payments]);
+  // All-time figures (the Overview tab can also show today or this month).
+  const metrics = useMemo(() => overviewMetrics(registrations, payments, refunds), [registrations, payments, refunds]);
 
   // Add Organization
   const handleAddOrg = async (e: React.FormEvent) => {
@@ -168,6 +172,7 @@ export function useAdminData() {
         photo_selection_limit: newPkgPhotoLimit,
         requires_mua: newPkgRequiresMua,
         mua_service_types: newPkgMuaTypes,
+        client_kind: newPkgKind,
         inclusions: JSON.stringify(inclusions),
         is_active: true,
       });
@@ -293,16 +298,31 @@ export function useAdminData() {
     }
   };
 
-  const handleUpdateFramingStatus = async (id: string, framingStatus: FramingStatus) => {
+  /** Sets the production status of one or many job orders (server skips orders it cannot change). */
+  const handleSetProductionStatus = async (ids: string[], status: ProductionStatus) => {
     try {
-      await pb.collection('registrations').update(id, {
-        framing_status: framingStatus,
+      const result = await pb.send<ProductionUpdateResult>('/api/studioflow/production-status', {
+        method: 'POST', body: { ids, status },
       });
-      toast.success('Framing status updated.');
-      loadAllData();
+      const { skipped } = result;
+      const notes = [
+        skipped.notShot && `${skipped.notShot} not photographed yet`,
+        skipped.unpaid && `${skipped.unpaid} unpaid`,
+        skipped.released && `${skipped.released} already released`,
+        skipped.cancelled && `${skipped.cancelled} cancelled`,
+        skipped.missing && `${skipped.missing} no longer exist`,
+      ].filter(Boolean);
+      const message = ids.length === 1 && !notes.length
+        ? 'Production status updated.'
+        : `${result.updated} job order${result.updated === 1 ? '' : 's'} updated`
+          + (result.unchanged ? `, ${result.unchanged} already set` : '')
+          + (notes.length ? `. Skipped: ${notes.join(', ')}.` : '.');
+      if (notes.length && !result.updated) toast.error(message);
+      else toast.success(message);
+      await loadAllData();
     } catch (err) {
-      console.error('Failed to update framing status:', err);
-      toast.error('Failed to update framing status.');
+      console.error('Failed to update production status:', err);
+      toast.error('Failed to update production status: ' + (err instanceof Error ? err.message : 'Unknown error'));
     }
   };
 
@@ -378,7 +398,7 @@ export function useAdminData() {
   // --- Package & Add-on Mutations (T020) ---
   const handleUpdatePackage = async (
     id: string,
-    data: { name: string; code: string; amount: number; inclusions: string[]; photo_selection_limit: number; requires_mua: boolean; mua_service_types: string[] }
+    data: { name: string; code: string; amount: number; inclusions: string[]; photo_selection_limit: number; requires_mua: boolean; mua_service_types: string[]; client_kind: PackageKind }
   ) => {
     try {
       await pb.collection('packages').update(id, {
@@ -389,6 +409,7 @@ export function useAdminData() {
         photo_selection_limit: data.photo_selection_limit,
         requires_mua: data.requires_mua,
         mua_service_types: data.mua_service_types,
+        client_kind: data.client_kind,
       });
       loadAllData();
     } catch (err) {
@@ -517,22 +538,33 @@ export function useAdminData() {
     loadAllData();
   };
 
-  const handleDeleteRegistration = async (id: string) => {
-    try {
-      await pb.collection('registrations').delete(id);
-      toast.success('Registration cancelled and deleted.');
-      loadAllData();
-    } catch (err) {
-      console.error('Failed to delete registration:', err);
-      toast.error('Failed to delete registration.');
-    }
+  // Cancelling keeps the job order and its payment records for the ledger and receipt trail.
+  // The caller shows the success or error toast.
+  // Voids, refunds, cancellations and restores go through server routes that record who, when and why.
+  const handleCancelRegistration = async (id: string, reason: string) => {
+    await pb.send(`/api/studioflow/registrations/${id}/cancel`, { method: 'POST', body: { reason } });
+    await loadAllData();
+  };
+  const handleRestoreRegistration = async (id: string) => {
+    await pb.send(`/api/studioflow/registrations/${id}/restore`, { method: 'POST' });
+    await loadAllData();
+  };
+  const handleVoidPayment = async (paymentId: string, reason: string) => {
+    await pb.send(`/api/studioflow/payments/${paymentId}/void`, { method: 'POST', body: { reason } });
+    await loadAllData();
+  };
+  const handleRefund = async (refund: RefundRequest) => {
+    const saved = await pb.send<RefundRecord>('/api/studioflow/refunds', { method: 'POST', body: refund });
+    await loadAllData();
+    return saved;
   };
 
   const exportCsv = useCallback(() => {
-    exportRegistrationsToCsv(registrations);
-  }, [registrations]);
+    exportRegistrationsToCsv(registrations, payments, refunds);
+  }, [registrations, payments, refunds]);
 
-  const exportExcel = async () => {
+  /** Overall workbook: by level (as before), master (one sheet per school), one school, or walk-ins. */
+  const exportExcel = async (scope: OverallScope = { kind: 'levels' }, range: DateRange = {}, label = '') => {
     if (exportingExcel) return;
     setExportingExcel(true);
     try {
@@ -547,7 +579,7 @@ export function useAdminData() {
         toast.error(excelUnavailable);
         return;
       }
-      await downloadStudentExcel({ packages: data.packages, addOns: data.addOns, rows: data.rows });
+      await downloadStudentExcel({ packages: data.packages, addOns: data.addOns, rows: data.rows }, scope, range, label);
     } catch (err) {
       console.error('Failed to export the student workbook:', err);
       toast.error(err instanceof ClientResponseError && err.status === 404
@@ -588,6 +620,8 @@ export function useAdminData() {
     newPkgPhotoLimit,
     setNewPkgPhotoLimit,
     newPkgRequiresMua,
+    newPkgKind,
+    setNewPkgKind,
     setNewPkgRequiresMua,
     newPkgMuaTypes,
     setNewPkgMuaTypes,
@@ -613,7 +647,7 @@ export function useAdminData() {
     handleCreateStaff,
     handleDeleteStaff,
     handleUpdateStaff,
-    handleUpdateFramingStatus,
+    handleSetProductionStatus,
     handleUpdatePhotoStatus,
     // School & Course Mutations
     handleUpdateOrg,
@@ -635,7 +669,11 @@ export function useAdminData() {
     handleClearMasterList,
     // Student Registration Mutations
     handleUpdateRegistration,
-    handleDeleteRegistration,
+    handleCancelRegistration,
+    handleRestoreRegistration,
+    handleVoidPayment,
+    handleRefund,
+    refunds,
     // Report Export
     exportCsv,
     exportExcel,

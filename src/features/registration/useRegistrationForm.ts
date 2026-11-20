@@ -11,7 +11,9 @@ import type {
   Registration,
   MasterListItem,
 } from '../../types';
+import type { ClientKind } from '../../types';
 import { splitFullName } from '../../utils/formatters';
+import { useStudioSettings } from '../../hooks/useStudioSettings';
 import {
   emailPattern, mobilePattern, packageRequiredMessage, registrationFields, validationProps,
   type RegistrationErrors,
@@ -19,6 +21,24 @@ import {
 
 export function useRegistrationForm() {
   const { toast } = useToast();
+  const studio = useStudioSettings();
+
+  // Client type. With only one type switched on it is chosen automatically.
+  const [chosenKind, setChosenKind] = useState<ClientKind | ''>('');
+  const availableKinds: ClientKind[] = [
+    ...(studio.schoolEnabled ? ['school' as const] : []),
+    ...(studio.walkinEnabled ? ['walkin' as const] : []),
+  ];
+  const clientKind: ClientKind | '' = availableKinds.length === 1
+    ? availableKinds[0]
+    : availableKinds.includes(chosenKind as ClientKind) ? chosenKind : '';
+  const isWalkIn = clientKind === 'walkin';
+  const [sessionTypeId, setSessionTypeId] = useState('');
+  const [eventDate, setEventDate] = useState('');
+  const [eventVenue, setEventVenue] = useState('');
+  const [clientOrg, setClientOrg] = useState('');
+  const [notes, setNotes] = useState('');
+  const selectedSession = studio.activeSessionTypes.find((type) => type.id === sessionTypeId);
 
   // Reference Master Data
   const [organizations, setOrganizations] = useState<Organization[]>([]);
@@ -224,8 +244,13 @@ export function useRegistrationForm() {
     );
   }, []);
 
+  // Packages offered to this type of client (older packages without a type are school packages).
+  const kindPackages = clientKind
+    ? packages.filter((pkg) => [clientKind, 'both'].includes(pkg.client_kind || 'school'))
+    : [];
+
   // Live Total Calculation
-  const selectedPackage = packages.find((pkg) => pkg.id === selectedPackageId);
+  const selectedPackage = kindPackages.find((pkg) => pkg.id === selectedPackageId);
   const totalAmount = selectedPackage
     ? selectedPackage.amount + addOnsList.reduce((sum, item) => (
       selectedAddOns.includes(item.id) ? sum + item.amount : sum
@@ -260,9 +285,19 @@ export function useRegistrationForm() {
     const fieldErrors: RegistrationErrors = {};
     if (!familyName.trim()) fieldErrors.family_name = 'Enter your family name.';
     if (!givenName.trim()) fieldErrors.given_name = 'Enter your given name.';
-    if (!selectedOrgId) fieldErrors.organization = 'Select your school, campus, or organization.';
-    if (!selectedLevelId) fieldErrors.level = 'Select your academic level.';
-    if (!selectedCourseId) fieldErrors.course = 'Select a course or strand for this school and academic level.';
+    if (!clientKind) {
+      fieldErrors.client_kind = availableKinds.length ? 'Choose the type of client.' : 'Registration is closed right now. Please ask the staff.';
+    } else if (isWalkIn) {
+      if (!selectedSession) fieldErrors.session_type = 'Select the type of session.';
+      else if (selectedSession.on_location) {
+        if (!eventDate) fieldErrors.event_date = 'Enter the event date.';
+        if (!eventVenue.trim()) fieldErrors.event_venue = 'Enter the event venue.';
+      }
+    } else {
+      if (!selectedOrgId) fieldErrors.organization = 'Select your school, campus, or organization.';
+      if (!selectedLevelId) fieldErrors.level = 'Select your academic level.';
+      if (!selectedCourseId) fieldErrors.course = 'Select a course or strand for this school and academic level.';
+    }
     if (!cleanEmail) fieldErrors.email = 'Enter your email address.';
     else if (!emailPattern.test(cleanEmail)) fieldErrors.email = 'Enter a valid email address.';
     if (cleanMobile && !mobilePattern.test(cleanMobile.replace(/[ -]/g, ''))) {
@@ -289,12 +324,23 @@ export function useRegistrationForm() {
       formData.append('family_name', familyName.trim());
       formData.append('given_name', givenName.trim());
       formData.append('middle_name', middleName.trim());
-      formData.append('student_id', studentId.trim());
-      formData.append('organization', selectedOrgId);
-      formData.append('level', selectedLevelId);
-      formData.append('course', selectedCourseId);
-      formData.append('section', section.trim());
-      formData.append('department', department.trim());
+      formData.append('client_kind', clientKind);
+      if (isWalkIn) {
+        formData.append('session_type', selectedSession?.id ?? '');
+        if (selectedSession?.on_location) {
+          formData.append('event_date', eventDate + ' 00:00:00.000Z');
+          formData.append('event_venue', eventVenue.trim());
+        }
+        formData.append('client_org', clientOrg.trim());
+        formData.append('notes', notes.trim());
+      } else {
+        formData.append('student_id', studentId.trim());
+        formData.append('organization', selectedOrgId);
+        formData.append('level', selectedLevelId);
+        formData.append('course', selectedCourseId);
+        formData.append('section', section.trim());
+        formData.append('department', department.trim());
+      }
       formData.append('mobile_number', cleanMobile);
       formData.append('email', cleanEmail);
       formData.append('package', selectedPackage.id);
@@ -307,7 +353,7 @@ export function useRegistrationForm() {
       formData.append('signature', signatureBlob, 'signature.png');
 
       const created = await pb.collection('registrations').create<Registration>(formData, {
-        expand: 'organization,level,course,package',
+        expand: 'organization,level,course,package,session_type',
       });
 
       if (signatureDataUrl) {
@@ -352,6 +398,12 @@ export function useRegistrationForm() {
     setSchoolCatalog(null);
     setSection('');
     setDepartment('');
+    setChosenKind('');
+    setSessionTypeId('');
+    setEventDate('');
+    setEventVenue('');
+    setClientOrg('');
+    setNotes('');
     setMobileNumber('');
     setEmail('');
     setSelectedPackageId(null);
@@ -365,12 +417,37 @@ export function useRegistrationForm() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
+  const changeKind = (kind: ClientKind) => {
+    setChosenKind(kind);
+    setSelectedPackageId(null);
+    clearErrors('client_kind', 'package');
+  };
+
   return {
+    // Client type & walk-in details
+    studioLoaded: studio.loaded,
+    availableKinds,
+    clientKind,
+    setClientKind: changeKind,
+    isWalkIn,
+    sessionTypes: studio.activeSessionTypes,
+    sessionTypeId,
+    setSessionTypeId: (id: string) => { setSessionTypeId(id); clearErrors('session_type', 'event_date', 'event_venue'); },
+    selectedSession,
+    eventDate,
+    setEventDate: changeField('event_date', setEventDate),
+    eventVenue,
+    setEventVenue: changeField('event_venue', setEventVenue),
+    clientOrg,
+    setClientOrg,
+    notes,
+    setNotes,
+    walkinTerms: studio.walkinTerms,
     // Master Data
     organizations,
     levels,
     courses,
-    packages,
+    packages: kindPackages,
     addOnsList,
     masterList,
     // Form State & Setters

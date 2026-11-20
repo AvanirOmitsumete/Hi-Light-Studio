@@ -4,8 +4,11 @@ import type { Organization, Level, Course, SchoolCourse, AssignSchoolCourse } fr
 import { ConfirmModal } from '../../../components/common/ConfirmModal';
 import { useToast } from '../../../context/ToastContext';
 import { CourseAutocomplete } from './CourseAutocomplete';
+import { CourseQuickAdd, type QuickAddChoice } from './CourseQuickAdd';
+import { catalogForLevel, STANDARD_LEVELS } from '../../../constants/courseCatalog';
 
 const catalogKey = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
+const OTHER_LEVEL = 'other';
 
 interface AdminOrgsTabProps {
   organizations: Organization[];
@@ -70,12 +73,27 @@ export const AdminOrgsTab: React.FC<AdminOrgsTabProps> = ({
   const [newCourseName, setNewCourseName] = useState('');
   const [newCourseCode, setNewCourseCode] = useState('');
   const [selectedCourseId, setSelectedCourseId] = useState<string>();
+  // The level choice is an existing level id, `new:<standard name>`, or OTHER_LEVEL (typed name).
   const [preferredLevelId, setPreferredLevelId] = useState('');
+  const [customLevelName, setCustomLevelName] = useState('');
   const [addingCourse, setAddingCourse] = useState(false);
-  const selectedLevel = levelOptions.find((level) => level.id === preferredLevelId) ?? levelOptions[0];
+  const newLevelChoices = STANDARD_LEVELS.filter((name) =>
+    !levelOptions.some((option) => catalogKey(option.name) === catalogKey(name)));
+  const levelChoice = preferredLevelId
+    || (levelOptions[0]?.id ?? (newLevelChoices.includes('College') ? 'new:College' : OTHER_LEVEL));
+  // A new level picked earlier becomes a real level after the first course is added to it.
+  const selectedLevel = levelOptions.find((level) => level.id === levelChoice)
+    ?? (levelChoice.startsWith('new:')
+      ? levelOptions.find((level) => catalogKey(level.name) === catalogKey(levelChoice.slice(4)))
+      : undefined);
   const selectedLevelId = selectedLevel?.id ?? '';
+  const selectedLevelName = selectedLevel?.name
+    ?? (levelChoice.startsWith('new:') ? levelChoice.slice(4) : customLevelName.trim().replace(/\s+/g, ' '));
+  // What the server needs to find or create this school's level.
+  const levelTarget = selectedLevelId ? { levelId: selectedLevelId } : { levelName: selectedLevelName };
+  const levelReady = !!selectedLevelId || !!selectedLevelName;
   const levelNamesById = new Map(levels.map((level) => [level.id, catalogKey(level.name)]));
-  const chosenLevelName = catalogKey(selectedLevel?.name ?? '');
+  const chosenLevelName = catalogKey(selectedLevelName);
   const assignedCourseIds = new Set<string>();
   const eligibleCourseIds = new Set<string>();
   for (const assignment of schoolCourses) {
@@ -146,11 +164,15 @@ export const AdminOrgsTab: React.FC<AdminOrgsTabProps> = ({
 
   const handleCreateCourse = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedSchool || !selectedLevelId || addingCourse) return;
+    if (!selectedSchool || addingCourse) return;
+    if (!levelReady) {
+      toast.error('Type the name of the academic level first.');
+      return;
+    }
     const name = newCourseName.trim();
     const code = newCourseCode.trim();
     if (!name || (!code && !selectedCourseId)) {
-      toast.error('Enter a course name and code, or select an existing course.');
+      toast.error('Enter the course name and its acronym, or select an existing course.');
       return;
     }
     if (selectedCourseId && !searchableCourses.some((course) => course.id === selectedCourseId)
@@ -160,8 +182,8 @@ export const AdminOrgsTab: React.FC<AdminOrgsTabProps> = ({
     }
     setAddingCourse(true);
     try {
-      await onAddCourse({ schoolId: selectedSchool.id, levelId: selectedLevelId, name, code, courseId: selectedCourseId });
-      toast.success(`Course assigned to "${selectedSchool.name}".`);
+      await onAddCourse({ schoolId: selectedSchool.id, ...levelTarget, name, code, courseId: selectedCourseId });
+      toast.success(`${code || name} added to ${selectedSchool.code || selectedSchool.name}.`);
       setNewCourseName('');
       setNewCourseCode('');
       setSelectedCourseId(undefined);
@@ -169,6 +191,17 @@ export const AdminOrgsTab: React.FC<AdminOrgsTabProps> = ({
       toast.error(err instanceof Error ? err.message : 'Failed to add course');
     } finally {
       setAddingCourse(false);
+    }
+  };
+
+  // One-click add from the built-in course list (reuses the course record when it already exists).
+  const quickAddCourse = async ({ courseId, name, code }: QuickAddChoice) => {
+    if (!selectedSchool || !levelReady) return;
+    try {
+      await onAddCourse({ schoolId: selectedSchool.id, ...levelTarget, name, code, courseId });
+      toast.success(`${code || name} added to ${selectedSchool.code || selectedSchool.name}.`);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to add course');
     }
   };
 
@@ -390,24 +423,67 @@ export const AdminOrgsTab: React.FC<AdminOrgsTabProps> = ({
 
             {/* Create Course Form */}
             <form onSubmit={handleCreateCourse} className="p-4 bg-canvas border-2 border-line mb-5">
-              <fieldset disabled={!selectedSchool || !selectedLevelId || addingCourse} className="min-w-0 space-y-3 disabled:opacity-60">
+              <fieldset disabled={!selectedSchool || addingCourse} className="min-w-0 space-y-3 disabled:opacity-60">
                 <div>
                   <label htmlFor="new-course-level" className="block text-[10px] font-black uppercase mb-1">
                     Target Academic Level <span className="text-red-500">*</span>
                   </label>
                   <select
                     id="new-course-level"
-                    value={selectedLevelId}
+                    value={selectedLevel?.id ?? levelChoice}
                     onChange={(e) => setPreferredLevelId(e.target.value)}
                     className="w-full p-2 bg-panel border border-line font-bold"
                   >
-                    {!levelOptions.length && <option value="">No academic levels available</option>}
-                    {levelOptions.map((lvl) => (
-                      <option key={lvl.id} value={lvl.id}>{lvl.name}</option>
-                    ))}
+                    {levelOptions.length > 0 && (
+                      <optgroup label="Levels in use">
+                        {levelOptions.map((lvl) => (
+                          <option key={lvl.id} value={lvl.id}>{lvl.name}</option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <optgroup label="Add another level">
+                      {newLevelChoices.map((name) => (
+                        <option key={name} value={`new:${name}`}>{name}</option>
+                      ))}
+                      <option value={OTHER_LEVEL}>Other level… (type its name)</option>
+                    </optgroup>
                   </select>
+                  {levelChoice === OTHER_LEVEL && (
+                    <input
+                      aria-label="Name of the academic level"
+                      value={customLevelName}
+                      onChange={(e) => setCustomLevelName(e.target.value)}
+                      maxLength={60}
+                      placeholder="e.g. Grade School, Masteral, Review Center"
+                      className="w-full mt-2 p-2 bg-panel border border-line font-bold"
+                    />
+                  )}
+                  {!selectedLevelId && levelReady && (
+                    <p className="mt-1 text-[10px] text-neutral-600">
+                      &ldquo;{selectedLevelName}&rdquo; is added to {selectedSchool?.code || selectedSchool?.name || 'the school'} with its first course.
+                    </p>
+                  )}
                 </div>
 
+                <CourseQuickAdd
+                  key={chosenLevelName}
+                  catalog={catalogForLevel(selectedLevelName)}
+                  courses={courses}
+                  availableIds={new Set(searchableCourses.map((course) => course.id))}
+                  addedIds={new Set(assignedCourses
+                    .filter(({ assignment }) => levelNamesById.get(assignment.level) === chosenLevelName)
+                    .map(({ course }) => course.id))}
+                  disabled={!selectedSchool || !levelReady || courseCatalogStatus !== 'ready'}
+                  onAdd={quickAddCourse}
+                />
+
+                <div className="border-t-2 border-line pt-3 space-y-3">
+                  <div>
+                    <div className="text-[10px] font-black uppercase text-ink">Add a Course Manually</div>
+                    <p className="text-[10px] text-neutral-600">
+                      Not in the list above? Type the full course name and its acronym (e.g. &ldquo;Bachelor of Science in Hotel and Restaurant Management&rdquo; and &ldquo;BSHRM&rdquo;).
+                    </p>
+                  </div>
                 <div className="relative grid grid-cols-2 gap-2">
                   <CourseAutocomplete
                     field="name"
@@ -443,8 +519,9 @@ export const AdminOrgsTab: React.FC<AdminOrgsTabProps> = ({
                   type="submit"
                   className="btn-tactile w-full py-2 bg-obsidian text-gold font-black uppercase tracking-wider cursor-pointer disabled:cursor-not-allowed"
                 >
-                  {addingCourse ? 'Assigning Course…' : '+ Add Degree Program'}
+                  {addingCourse ? 'Adding Course…' : '+ Add Course'}
                 </button>
+                </div>
               </fieldset>
             </form>
 

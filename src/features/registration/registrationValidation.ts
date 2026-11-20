@@ -1,5 +1,6 @@
 export const registrationFields = [
-  'family_name', 'given_name', 'organization', 'level', 'course', 'email',
+  'client_kind', 'family_name', 'given_name', 'organization', 'level', 'course',
+  'session_type', 'event_date', 'event_venue', 'email',
   'mobile_number', 'package', 'terms_accepted', 'signature',
 ] as const;
 

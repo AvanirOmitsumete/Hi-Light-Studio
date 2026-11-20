@@ -1,4 +1,4 @@
-import type { Course, Level, Organization, Package, PaymentRecord, Registration } from '../../types';
+import type { Course, Level, Organization, Package, PaymentRecord, RefundRecord, Registration } from '../../types';
 import { getRegistrationAddOns } from '../../utils/registrationAddOns';
 
 export const reportPackages = [
@@ -11,9 +11,18 @@ export const reportPackages = [
 export type ReportPackageId = typeof reportPackages[number]['id'];
 export type PackageColumn = ReportPackageId | `catalog:${string}`;
 export type PackageMapping = Partial<Record<string, ReportPackageId | ''>>;
-export type OverallLevel = 'college' | 'shs';
+/** 'college', 'shs', or another level's name in capitals (e.g. 'ELEMENTARY'). */
+export type OverallLevel = string;
 
 const normalize = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/** Groups a level name for the Overall reports; matches the server's student Excel export. */
+export function overallLevelKey(levelName: string): OverallLevel {
+  const key = normalize(levelName);
+  if (key === 'college') return 'college';
+  if (/^(?:senior high(?: school)?(?: shs)?|shs)(?: (?:grade )?(?:11|12))?$/.test(key)) return 'shs';
+  return key.toUpperCase();
+}
 const cents = (amount: number | undefined) => typeof amount === 'number' && Number.isFinite(amount) ? Math.round(amount * 100) : 0;
 const studioDate = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -39,7 +48,9 @@ export function reportPackageFor(pkg: Package, mapping: PackageMapping) {
   })?.id;
 }
 
-function paymentBreakdown(records: PaymentRecord[], due: number) {
+function paymentBreakdown(allRecords: PaymentRecord[], due: number, refunded = 0) {
+  // Voided payments (and old "refunded" ones) were never kept: leave them out.
+  const records = allRecords.filter((payment) => payment.status !== 'voided' && payment.status !== 'refunded');
   let total = 0;
   let downPayment = 0;
   let additionalPayment = 0;
@@ -71,14 +82,18 @@ function paymentBreakdown(records: PaymentRecord[], due: number) {
     receivedPayment ||= amount > 0;
   }
 
-  const balance = Math.max(0, due - total);
-  const fullyPaid = receivedPayment && total > 0 && balance === 0;
-  return { total, downPayment, additionalPayment, balancePayment, balance, fullyPaid, settledDate: fullyPaid ? settledDate : '' };
+  // Money given back comes off the total paid.
+  const net = total - refunded;
+  const balance = Math.max(0, due - net);
+  const fullyPaid = receivedPayment && net > 0 && balance === 0;
+  return { total: net, refunded, downPayment, additionalPayment, balancePayment, balance, fullyPaid, settledDate: fullyPaid ? settledDate : '' };
 }
 
 interface OverallData {
   registrations: Registration[];
   payments: PaymentRecord[];
+  /** Refunds given back; they come off each job order's total paid. */
+  refunds?: RefundRecord[];
   organizations: Organization[];
   levels: Level[];
   courses: Course[];
@@ -86,7 +101,11 @@ interface OverallData {
   mapping: PackageMapping;
 }
 
-export function buildOverallRows({ registrations, payments, organizations, levels, courses, packages, mapping }: OverallData) {
+export function buildOverallRows({ registrations, payments, refunds = [], organizations, levels, courses, packages, mapping }: OverallData) {
+  const refundedByRegistration = new Map<string, number>();
+  for (const refund of refunds) {
+    refundedByRegistration.set(refund.registration, (refundedByRegistration.get(refund.registration) ?? 0) + cents(refund.amount));
+  }
   const schoolsById = new Map(organizations.map((item) => [item.id, item]));
   const levelsById = new Map(levels.map((item) => [item.id, item]));
   const coursesById = new Map(courses.map((item) => [item.id, item]));
@@ -99,10 +118,10 @@ export function buildOverallRows({ registrations, payments, organizations, level
   }
 
   return [...new Map(registrations.map((item) => [item.id, item])).values()].flatMap((reg) => {
-    const academicLevel = normalize(levelsById.get(reg.level ?? '')?.name ?? reg.expand?.level?.name ?? '');
-    const level = academicLevel === 'college' ? 'college'
-      : /^(?:senior high(?: school)?(?: shs)?|shs)(?: (?:grade )?(?:11|12))?$/.test(academicLevel) ? 'shs' : undefined;
-    if (!level) return [];
+    // Walk-ins have no level and are not part of the school Overall reports.
+    const level = overallLevelKey(levelsById.get(reg.level ?? '')?.name ?? reg.expand?.level?.name ?? '');
+    // Walk-ins and cancelled job orders (nothing owed) are not part of these reports.
+    if (!level || reg.status === 'cancelled') return [];
 
     const school = schoolsById.get(reg.organization ?? '') ?? reg.expand?.organization;
     const course = coursesById.get(reg.course ?? '') ?? reg.expand?.course;
@@ -122,7 +141,7 @@ export function buildOverallRows({ registrations, payments, organizations, level
       const quantity = item.quantity;
       return sum + (typeof quantity === 'number' && Number.isInteger(quantity) && quantity > 0 ? quantity : 1);
     }, 0) * 35000 : null;
-    const money = paymentBreakdown(paymentsByRegistration.get(reg.id) ?? [], due);
+    const money = paymentBreakdown(paymentsByRegistration.get(reg.id) ?? [], due, refundedByRegistration.get(reg.id) ?? 0);
     return [{
       id: reg.id,
       level,
@@ -153,14 +172,14 @@ export function buildOverallRows({ registrations, payments, organizations, level
 export type OverallRow = ReturnType<typeof buildOverallRows>[number];
 
 export const amountColumns = [
-  'poses', 'additionalPayment', 'downPayment', 'total', 'balancePayment', 'balance',
+  'poses', 'additionalPayment', 'downPayment', 'refunded', 'total', 'balancePayment', 'balance',
 ] as const;
 
 type AmountColumn = typeof amountColumns[number];
 
 export function overallAmount(row: OverallRow, column: string): number | null {
   switch (column) {
-    case 'poses': case 'additionalPayment': case 'downPayment': case 'total': case 'balancePayment': case 'balance':
+    case 'poses': case 'additionalPayment': case 'downPayment': case 'refunded': case 'total': case 'balancePayment': case 'balance':
       return row[column];
     default:
       return row.packageColumn === column ? row.packageAmount : null;

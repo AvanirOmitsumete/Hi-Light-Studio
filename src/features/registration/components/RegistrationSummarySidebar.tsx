@@ -21,6 +21,8 @@ interface RegistrationSummarySidebarProps {
   termsAccepted: boolean;
   hasSignature: boolean;
   isSubmitting: boolean;
+  /** Overrides the school line, e.g. for walk-in clients. */
+  profileLine?: string;
 }
 
 export const RegistrationSummarySidebar: React.FC<RegistrationSummarySidebarProps> = ({
@@ -41,6 +43,7 @@ export const RegistrationSummarySidebar: React.FC<RegistrationSummarySidebarProp
   termsAccepted,
   hasSignature,
   isSubmitting,
+  profileLine,
 }) => {
   const selectedOrg = organizations.find((o) => o.id === selectedOrgId);
   const selectedCourse = courses.find((c) => c.id === selectedCourseId);
@@ -84,8 +87,8 @@ export const RegistrationSummarySidebar: React.FC<RegistrationSummarySidebarProp
           {fullName || 'Awaiting Name Input...'}
         </div>
         <div className="text-[11px] text-neutral-400 truncate">
-          {selectedOrg?.code || selectedOrg?.name || 'School Not Selected'} •{' '}
-          {selectedCourse?.code || selectedCourse?.name || 'Degree Program'}
+          {profileLine ?? <>{selectedOrg?.code || selectedOrg?.name || 'School Not Selected'} •{' '}
+          {selectedCourse?.code || selectedCourse?.name || 'Degree Program'}</>}
         </div>
       </div>
 

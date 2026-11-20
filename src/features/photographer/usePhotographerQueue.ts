@@ -20,13 +20,13 @@ export function usePhotographerQueue() {
         pb.collection('registrations').getFullList<Registration>({
           filter: "status = 'shooting' || (status = 'paid' && paid_amount > 0 && (makeup_state = 'completed' || (makeup_service = '' && makeup_state = '')))",
           sort: 'created,queue_number,id',
-          expand: 'organization,level,course,package',
+          expand: 'organization,level,course,package,session_type',
           requestKey: null,
         }),
         pb.collection('registrations').getList<Registration>(1, 20, {
           filter: "status = 'done_shooting' || status = 'completed'",
           sort: '-updated',
-          expand: 'organization,level,course,package',
+          expand: 'organization,level,course,package,session_type',
           requestKey: null,
         }),
       ]);
@@ -68,8 +68,10 @@ export function usePhotographerQueue() {
           status: 'shooting',
         });
         playStudioChime();
+        return true;
       } catch (err) {
         toast.error(workflowError(err));
+        return false;
       } finally {
         void fetchLiveQueue();
       }
@@ -87,8 +89,10 @@ export function usePhotographerQueue() {
         if (currentlyShootingId === reg.id) {
           setCurrentlyShootingId(null);
         }
+        return true;
       } catch (err) {
         toast.error(workflowError(err));
+        return false;
       } finally {
         void fetchLiveQueue();
       }

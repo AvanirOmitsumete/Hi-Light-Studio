@@ -6,6 +6,7 @@ import {
   formatJobOrderNo,
   formatQueueNumber,
 } from '../../../utils/formatters';
+import { clientDetail, clientGroup } from '../../../utils/clientInfo';
 
 interface PhotographerHistoryListProps {
   recentlyDone: Registration[];
@@ -48,8 +49,8 @@ export const PhotographerHistoryList: React.FC<PhotographerHistoryListProps> = (
                     {formatJobOrderNo(reg.job_order_no)}
                   </span>
                   <div className="text-[11px] text-neutral-500 font-medium">
-                    {reg.expand?.organization?.name} •{' '}
-                    {reg.expand?.course?.code || reg.course}
+                    {clientGroup(reg, true)} •{' '}
+                    {clientDetail(reg)}
                   </div>
                 </div>
               </div>

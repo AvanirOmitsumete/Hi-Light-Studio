@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { pb } from '../../../db/pocketbase';
-import type { Course, Level, Organization, Package, PaymentRecord, Registration } from '../../../types';
+import type { Course, Level, Organization, Package, PaymentRecord, RefundRecord, Registration } from '../../../types';
 import { sumAddOnAmounts } from '../../../utils/registrationAddOns';
 import {
   amountColumns, buildOverallRows, displayReportDate, overallAmount, reportPackages, summarizeOverallRows,
@@ -24,6 +24,7 @@ const trailingColumns = [
   { id: 'fullyPaid', label: 'Full Payment' },
   { id: 'additionalPayment', label: 'Additional Payment' },
   { id: 'downPayment', label: 'Down Payment' },
+  { id: 'refunded', label: 'Refunded', description: 'Money given back; taken off Total Payment' },
   { id: 'total', label: 'Total Payment' },
   { id: 'balancePayment', label: 'Balance Payment' },
   { id: 'settledDate', label: 'Date Paid with the Balance' },
@@ -38,6 +39,7 @@ const defaultColumnIds = new Set<Column>([
   'fullyPaid',
   'additionalPayment',
   'downPayment',
+  'refunded',
   'total',
   'balancePayment',
   'balance',
@@ -81,7 +83,7 @@ function readMapping(): PackageMapping {
 }
 
 function usePaymentLedger() {
-  const [ledger, setLedger] = useState<{ status: 'loading' | 'error' } | { status: 'ready'; records: PaymentRecord[] }>({ status: 'loading' });
+  const [ledger, setLedger] = useState<{ status: 'loading' | 'error' } | { status: 'ready'; records: PaymentRecord[]; refunds: RefundRecord[] }>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -93,8 +95,12 @@ function usePaymentLedger() {
     async function refresh() {
       const request = ++version;
       try {
-        const records = await collection.getFullList<PaymentRecord>({ fields: 'id,registration,amount,payment_type,created' });
-        if (active && request === version) setLedger({ status: 'ready', records });
+        // status is needed so voided payments are left out.
+        const [records, refunds] = await Promise.all([
+          collection.getFullList<PaymentRecord>({ fields: 'id,registration,amount,payment_type,status,created' }),
+          pb.collection('refunds').getFullList<RefundRecord>({ fields: 'id,registration,amount,created' }).catch(() => [] as RefundRecord[]),
+        ]);
+        if (active && request === version) setLedger({ status: 'ready', records, refunds });
       } catch {
         if (active && request === version) setLedger({ status: 'error' });
       }
@@ -171,7 +177,7 @@ export function StudentOverall({ title, level, registrations, organizations, lev
   const [columnOverrides, setColumnOverrides] = useState<Partial<Record<Column, boolean>>>({});
 
   const allRows = useMemo(() => ledger.status === 'ready'
-    ? buildOverallRows({ registrations, payments: ledger.records, organizations, levels, courses, packages, mapping })
+    ? buildOverallRows({ registrations, payments: ledger.records, refunds: ledger.refunds, organizations, levels, courses, packages, mapping })
     : [], [registrations, ledger, organizations, levels, courses, packages, mapping]);
   const rows = useMemo(() => allRows.filter((row) => row.level === level), [allRows, level]);
   const catalogColumns = [...new Map(rows.flatMap((row) => {

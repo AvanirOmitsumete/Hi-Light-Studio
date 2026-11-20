@@ -9,6 +9,9 @@ interface TermsAndSignatureSectionProps {
   onTermsAcceptedChange: (accepted: boolean) => void;
   onSignatureChange: (blob: Blob | null, dataUrl?: string | null) => void;
   errors: RegistrationErrors;
+  /** Clauses to show; defaults to the school/graduation terms. */
+  clauses?: readonly string[];
+  walkIn?: boolean;
 }
 
 export const TermsAndSignatureSection: React.FC<TermsAndSignatureSectionProps> = ({
@@ -16,6 +19,8 @@ export const TermsAndSignatureSection: React.FC<TermsAndSignatureSectionProps> =
   onTermsAcceptedChange,
   onSignatureChange,
   errors,
+  clauses = REGISTRATION_TERMS_CLAUSES,
+  walkIn = false,
 }) => {
   return (
     <>
@@ -30,12 +35,12 @@ export const TermsAndSignatureSection: React.FC<TermsAndSignatureSectionProps> =
             Studio Terms &amp; Conditions
           </h2>
           <span className="font-mono text-[10px] text-neutral-500 uppercase">
-            {REGISTRATION_TERMS_CLAUSES.length} Clauses
+            {clauses.length} Clauses
           </span>
         </div>
 
         <div className="bg-canvas border border-neutral-300 p-4 text-xs text-neutral-700 space-y-1.5 max-h-48 overflow-y-auto leading-relaxed">
-          {REGISTRATION_TERMS_CLAUSES.map((clause, index) => (
+          {clauses.map((clause, index) => (
             <p key={index}>
               <strong>{index + 1}.</strong> {clause}
             </p>
@@ -53,7 +58,7 @@ export const TermsAndSignatureSection: React.FC<TermsAndSignatureSectionProps> =
           />
           <span className="text-xs sm:text-sm font-bold text-ink">
             I have read and agree to the Hi-Light Studio Terms &amp; Conditions and authorize the
-            processing of my graduation portrait data.
+            processing of my {walkIn ? 'portrait and event' : 'graduation portrait'} data.
           </span>
         </label>
         <RegistrationFieldError field="terms_accepted" errors={errors} />

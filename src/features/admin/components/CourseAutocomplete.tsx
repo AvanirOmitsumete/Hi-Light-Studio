@@ -84,7 +84,7 @@ export function CourseAutocomplete({ field, value, courses, status, onChange, on
   return (
     <div className="min-w-0 sm:relative">
       <label htmlFor={inputId} className="block text-[10px] font-black uppercase mb-1">
-        {field === 'code' ? 'Course Code' : 'Course Name'}
+        {field === 'code' ? 'Acronym / Code' : 'Full Course Name'}
       </label>
       <input
         id={inputId}

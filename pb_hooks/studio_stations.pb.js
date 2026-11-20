@@ -12,7 +12,8 @@ routerAdd("GET", "/api/studioflow/makeup", (e) => {
   const waiting = "status = 'paid' && paid_amount > 0 && makeup_service != '' && makeup_state = ''";
   const assigned = "(makeup_state = 'claimed' || makeup_state = 'in_progress')";
   const filter = admin ? `(${waiting}) || ${assigned} || makeup_state = 'completed'`
-    : `(${waiting}) || (${assigned} && makeup_artist = {:artist})`;
+    // Admins still see cancelled assignments so they can release them; artists do not.
+    : `(${waiting}) || (${assigned} && makeup_artist = {:artist} && status != 'cancelled')`;
   const registrations = e.app.findRecordsByFilter("registrations", filter, "created,queue_number,id", 0, 0, { artist: account.id });
   e.response.header().set("Cache-Control", "private, no-store");
   return e.json(200, registrations.map((record) => {

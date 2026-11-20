@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Megaphone, CheckCircle2, Folder, Copy, Check } from 'lucide-react';
+import { Megaphone, CheckCircle2, Folder, Copy, Check, Aperture } from 'lucide-react';
 import type { Registration } from '../../../types';
 import {
   formatClientName,
@@ -10,6 +10,7 @@ import {
 import { getPhotoFolderPath, copyFolderPathToClipboard } from '../../../utils/folderPath';
 import { useToast } from '../../../context/ToastContext';
 import { workflowError } from '../../../hooks/useWorkflowData';
+import { clientDetail, clientGroup } from '../../../utils/clientInfo';
 
 interface PhotographerQueueCardProps {
   registration: Registration;
@@ -17,6 +18,10 @@ interface PhotographerQueueCardProps {
   isShooting: boolean;
   onCallStudent: (reg: Registration) => void;
   onMarkDone: (reg: Registration) => void;
+  /** Name of this device's camera, or '' when no camera is in use. */
+  cameraName?: string;
+  cameraLinked?: boolean;
+  onLinkCamera?: (registrationId: string) => void;
 }
 
 export const PhotographerQueueCard: React.FC<PhotographerQueueCardProps> = ({
@@ -25,6 +30,9 @@ export const PhotographerQueueCard: React.FC<PhotographerQueueCardProps> = ({
   isShooting,
   onCallStudent,
   onMarkDone,
+  cameraName = '',
+  cameraLinked = false,
+  onLinkCamera,
 }) => {
   const [copied, setCopied] = useState(false);
   const [folderPath, setFolderPath] = useState('');
@@ -95,14 +103,14 @@ export const PhotographerQueueCard: React.FC<PhotographerQueueCardProps> = ({
             isShooting ? 'text-gold' : 'text-neutral-700'
           }`}
         >
-          {reg.expand?.organization?.name || 'School Organization'}
+          {clientGroup(reg, true) || 'School Organization'}
         </div>
         <div
           className={`font-mono text-[11px] mt-0.5 ${
             isShooting ? 'text-neutral-400' : 'text-neutral-500'
           }`}
         >
-          {reg.expand?.course?.name || reg.course || 'General Program'}{' '}
+          {clientDetail(reg, true) || 'General Program'}{' '}
           {reg.section ? `• Sec ${reg.section}` : ''}
         </div>
 
@@ -165,6 +173,22 @@ export const PhotographerQueueCard: React.FC<PhotographerQueueCardProps> = ({
           )}
         </div>
       </div>
+
+      {/* Camera auto-import link */}
+      {cameraName && (cameraLinked ? (
+        <div className="mb-3 flex items-center gap-2 px-3 py-2 border border-gold bg-gold-wash text-gold font-mono text-[10px] font-black uppercase tracking-widest">
+          <Aperture className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">{cameraName} → sending photos here</span>
+        </div>
+      ) : isShooting && onLinkCamera && (
+        <button
+          type="button"
+          onClick={() => onLinkCamera(reg.id)}
+          className="btn-tactile mb-3 w-full min-h-[38px] flex items-center justify-center gap-2 px-3 py-2 border border-gold text-gold bg-obsidian-2 font-mono text-[10px] font-black uppercase tracking-widest cursor-pointer"
+        >
+          <Aperture className="w-3.5 h-3.5" /> Link Camera ({cameraName})
+        </button>
+      ))}
 
       {/* Large Touch Action Buttons */}
       <div className="grid grid-cols-2 gap-2.5 pt-3 border-t border-neutral-500/20">

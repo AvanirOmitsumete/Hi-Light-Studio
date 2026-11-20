@@ -11,6 +11,8 @@ import {
   X,
   ChevronRight,
   ListChecks,
+  Aperture,
+  Shapes,
 } from 'lucide-react';
 import type { AdminTab } from '../useAdminData';
 
@@ -116,8 +118,8 @@ export const AdminSidebarNav: React.FC<AdminSidebarNavProps> = ({
     },
     {
       id: 'students',
-      label: 'Students Directory',
-      shortLabel: 'Students',
+      label: 'Clients Directory',
+      shortLabel: 'Clients',
       icon: Users,
       badge: studentCount,
     },
@@ -127,6 +129,12 @@ export const AdminSidebarNav: React.FC<AdminSidebarNavProps> = ({
       shortLabel: 'Packages',
       icon: PackageIcon,
       badge: packageCount,
+    },
+    {
+      id: 'clients',
+      label: 'Client Types & Sessions',
+      shortLabel: 'Client Types',
+      icon: Shapes,
     },
     {
       id: 'orgs',
@@ -143,8 +151,8 @@ export const AdminSidebarNav: React.FC<AdminSidebarNavProps> = ({
     },
     {
       id: 'framing',
-      label: 'Framing Schedule',
-      shortLabel: 'Framing',
+      label: 'Production & Pickup',
+      shortLabel: 'Production',
       icon: Frame,
     },
     {
@@ -152,6 +160,12 @@ export const AdminSidebarNav: React.FC<AdminSidebarNavProps> = ({
       label: 'Makeup & Photo Selection',
       shortLabel: 'Studio Workflow',
       icon: ListChecks,
+    },
+    {
+      id: 'camera',
+      label: 'Camera Import',
+      shortLabel: 'Camera',
+      icon: Aperture,
     },
     {
       id: 'staff',
@@ -278,7 +292,7 @@ export const AdminSidebarNav: React.FC<AdminSidebarNavProps> = ({
             <span className="text-[10px] font-black uppercase tracking-[0.2em] text-gold-soft">
               Admin Sections
             </span>
-            <span className="text-[9px] font-mono text-neutral-400">7 TABS</span>
+            <span className="text-[9px] font-mono text-neutral-400">{navItems.length} TABS</span>
           </div>
 
           <div className="space-y-1.5">

@@ -25,27 +25,50 @@ routerAdd("GET", "/api/studioflow/student-excel", (e) => {
     const key = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     if (key === "college") return "college";
     if (/^(?:senior high(?: school)?(?: shs)?|shs)(?: (?:grade )?(?:11|12))?$/.test(key)) return "shs";
-    return "";
+    // Any other level (Elementary, Graduate School, ...) gets its own sheet, keyed by its name.
+    return key ? key.toUpperCase() : "OTHER";
   };
 
-  let packages, addOns, registrations, payments;
+  let packages, addOns, registrations, payments, refunds;
   // Read all collections in a single transaction so both sheets share a snapshot.
   e.app.runInTransaction((tx) => {
     packages = readCatalog(tx, "packages");
     addOns = readCatalog(tx, "add_ons");
-    const levels = new Map(tx.findAllRecords("levels").map((record) =>
-      [record.id, classifyLevel(record.getString("name"))]));
+    const levelRecords = tx.findAllRecords("levels");
+    const levels = new Map(levelRecords.map((record) => [record.id, classifyLevel(record.getString("name"))]));
+    const levelNames = new Map(levelRecords.map((record) => [record.id, record.getString("name").trim()]));
+    const schools = new Map(tx.findAllRecords("organizations").map((record) =>
+      [record.id, { name: record.getString("name"), code: record.getString("code") }]));
     const courses = new Map(tx.findAllRecords("courses").map((record) => [record.id, record.getString("code")]));
+    const sessions = new Map(tx.findAllRecords("session_types").map((record) =>
+      [record.id, record.getString("code") || record.getString("name")]));
 
-    registrations = tx.findRecordsByFilter("registrations", "", "job_order_no,id", 0, 0).flatMap((record) => {
-      const level = levels.get(record.getString("level"));
-      if (!level) return [];
-      return [{
+    registrations = tx.findRecordsByFilter("registrations", "", "job_order_no,id", 0, 0).map((record) => {
+      // Walk-ins get their own sheet; their "course" column shows the session type.
+      const walkin = record.getString("client_kind") === "walkin";
+      // A student whose level is missing still appears (under OTHER), so totals are never short.
+      const level = walkin ? "walkin" : levels.get(record.getString("level")) || "OTHER";
+      const school = walkin ? null : schools.get(record.getString("organization"));
+      const cancelled = record.getString("status") === "cancelled";
+      return {
         id: record.id,
         level,
+        levelName: walkin ? "Walk-in" : levelNames.get(record.getString("level")) || "Other",
+        schoolId: walkin ? "__walkin" : record.getString("organization"),
+        schoolName: walkin ? "Walk-in clients" : school?.name || "Removed school",
+        schoolCode: walkin ? "WALK-IN" : school?.code || "",
+        cancelled,
+        // Who cancelled, when and why: listed on the CANCELLED sheet.
+        cancellation: cancelled ? {
+          at: record.getString("cancelled_at"),
+          by: record.getString("cancelled_by"),
+          reason: record.getString("cancel_reason"),
+          statusBefore: record.getString("status_before_cancel"),
+        } : null,
+        created: record.getString("created"),
         jobOrder: record.getString("job_order_no"),
-        date: record.getString("pictorial_date"),
-        course: courses.get(record.getString("course")) || "",
+        date: record.getString("pictorial_date") || (walkin ? record.getString("event_date") : ""),
+        course: walkin ? sessions.get(record.getString("session_type")) || "" : courses.get(record.getString("course")) || "",
         name: [record.getString("family_name") + ",", record.getString("given_name"), record.getString("middle_name")]
           .filter(Boolean).join(" "),
         packageId: record.getString("package"),
@@ -53,8 +76,12 @@ routerAdd("GET", "/api/studioflow/student-excel", (e) => {
         addOns: readJson(record, "add_ons"),
         due: cents(record.getFloat("total_amount")),
         otherFees: cents(record.getFloat("other_fees")),
-      }];
+      };
     });
+    refunds = tx.findAllRecords("refunds").map((record) => ({
+      registration: record.getString("registration"),
+      amount: cents(record.getFloat("amount")),
+    }));
     payments = tx.findAllRecords("payments").map((record) => ({
       registration: record.getString("registration"),
       type: record.getString("payment_type"),
@@ -67,11 +94,17 @@ routerAdd("GET", "/api/studioflow/student-excel", (e) => {
   for (const payment of payments) {
     // A refund or void marks the original transaction as reversed in the ledger.
     if (payment.status === "refunded" || payment.status === "voided") continue;
-    const totals = paymentsByRegistration.get(payment.registration) || { full: 0, additional: 0, down: 0 };
+    const totals = paymentsByRegistration.get(payment.registration) || { full: 0, additional: 0, down: 0, refunded: 0 };
     if (payment.type === "full" || payment.type === "balance_settlement") totals.full += payment.amount;
     else if (payment.type === "initial") totals.down += payment.amount;
     else totals.additional += payment.amount;
     paymentsByRegistration.set(payment.registration, totals);
+  }
+  // Money given back (refunds) is shown in its own column and taken off the total paid.
+  for (const refund of refunds) {
+    const totals = paymentsByRegistration.get(refund.registration) || { full: 0, additional: 0, down: 0, refunded: 0 };
+    totals.refunded += refund.amount;
+    paymentsByRegistration.set(refund.registration, totals);
   }
 
   const packagesById = new Map(packages.map((item) => [item.id, item]));
@@ -115,6 +148,13 @@ routerAdd("GET", "/api/studioflow/student-excel", (e) => {
     }
     return {
       level: record.level,
+      levelName: record.levelName,
+      schoolId: record.schoolId,
+      schoolName: record.schoolName,
+      schoolCode: record.schoolCode,
+      cancelled: record.cancelled,
+      cancellation: record.cancellation,
+      created: record.created,
       jobOrder: record.jobOrder,
       date: record.date,
       course: record.course,
@@ -124,7 +164,7 @@ routerAdd("GET", "/api/studioflow/student-excel", (e) => {
       packageAmount,
       addOns: Object.fromEntries(charges),
       due: record.due,
-      payments: paymentsByRegistration.get(record.id) || { full: 0, additional: 0, down: 0 },
+      payments: paymentsByRegistration.get(record.id) || { full: 0, additional: 0, down: 0, refunded: 0 },
     };
   });
 

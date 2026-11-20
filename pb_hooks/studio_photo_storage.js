@@ -25,10 +25,18 @@ function pathFor(app, registration, legacyBrowser = false) {
   const job = clean(registration.getString("job_order_no") || "JO-" + registration.id);
   const family = clean(registration.getString("family_name") || "STUDENT");
   const given = registration.getString("given_name");
+  const leaf = `${job}_${family}${given ? "_" + clean(given) : ""}`.replace(/_+$/, "");
+  if (registration.getString("client_kind") === "walkin") {
+    // Walk-ins have no school or course: file them by the month they registered (studio time, UTC+8).
+    const created = registration.getString("created");
+    const at = created ? Date.parse(created.replace(" ", "T")) : Date.now();
+    const month = new Date((Number.isFinite(at) ? at : Date.now()) + 8 * 3600000).toISOString().slice(0, 7);
+    return ["WALK-IN", month, leaf].join("/");
+  }
   return [
     clean(label("organizations", "organization", "ORGANIZATION")),
     clean(label("courses", "course", "COURSE")),
-    `${job}_${family}${given ? "_" + clean(given) : ""}`.replace(/_+$/, ""),
+    leaf,
   ].join("/");
 }
 
@@ -178,4 +186,4 @@ function displayPath(relative) {
   return $filepath.join(basePath(), ...relative.split("/"));
 }
 
-module.exports = { displayPath, image, inventory, openStudent, pathFor, photoFolder, provision, setFolder, statEntry };
+module.exports = { basePath, displayPath, formats, image, inventory, openStudent, pathFor, photoFolder, photoMime, provision, setFolder, statEntry, usableName };

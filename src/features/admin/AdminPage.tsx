@@ -7,11 +7,13 @@ import { AdminOrgsTab } from './components/AdminOrgsTab';
 import { AdminPackagesTab } from './components/AdminPackagesTab';
 import { AdminRosterTab } from './components/AdminRosterTab';
 import { AdminStaffTab } from './components/AdminStaffTab';
-import { AdminFramingTab } from './components/AdminFramingTab';
+import { AdminProductionTab } from './components/AdminProductionTab';
 import { AdminStudentsTab } from './components/AdminStudentsTab';
 import { MakeupPage } from '../workflow/MakeupPage';
 import { ChooserPage } from '../workflow/ChooserPage';
 import { stationButton } from '../workflow/StationLayout';
+import { CameraSettings } from '../camera/CameraSettings';
+import { AdminClientTypesTab } from './components/AdminClientTypesTab';
 
 export const AdminPage: React.FC = () => {
   const admin = useAdminData();
@@ -20,7 +22,8 @@ export const AdminPage: React.FC = () => {
   return (
     <div className="w-full max-w-[1680px] mx-auto px-4 sm:px-6 lg:px-8 xl:px-12 py-6 sm:py-8">
       {/* Executive Header */}
-      <AdminHeader onExportCsv={admin.exportCsv} onExportExcel={admin.exportExcel} exportingExcel={admin.exportingExcel} />
+      <AdminHeader onExportCsv={admin.exportCsv} onExportExcel={admin.exportExcel} exportingExcel={admin.exportingExcel}
+        organizations={admin.organizations} registrations={admin.registrations} />
 
       {/* Main Admin Two-Column Layout with Sidebar Navigation */}
       <div className="flex flex-col lg:flex-row gap-6 mt-6 items-start">
@@ -43,7 +46,9 @@ export const AdminPage: React.FC = () => {
               registrations={admin.registrations}
               packages={admin.packages}
               payments={admin.payments}
-              onExportCsv={admin.exportCsv}
+              refunds={admin.refunds}
+              onVoidPayment={admin.handleVoidPayment}
+              onRefund={admin.handleRefund}
             />
           )}
 
@@ -84,6 +89,8 @@ export const AdminPage: React.FC = () => {
               onNewPkgPhotoLimitChange={admin.setNewPkgPhotoLimit}
               newPkgRequiresMua={admin.newPkgRequiresMua}
               onNewPkgRequiresMuaChange={admin.setNewPkgRequiresMua}
+              newPkgKind={admin.newPkgKind}
+              onNewPkgKindChange={admin.setNewPkgKind}
               newPkgMuaTypes={admin.newPkgMuaTypes}
               onNewPkgMuaTypesChange={admin.setNewPkgMuaTypes}
               newPkgInclusions={admin.newPkgInclusions}
@@ -123,15 +130,16 @@ export const AdminPage: React.FC = () => {
               courses={admin.courses}
               packages={admin.packages}
               onUpdateRegistration={admin.handleUpdateRegistration}
-              onDeleteRegistration={admin.handleDeleteRegistration}
+              onCancelRegistration={admin.handleCancelRegistration}
+              onRestoreRegistration={admin.handleRestoreRegistration}
             />
           )}
 
-          {/* TAB 6: FRAMING SCHEDULE (T047) */}
+          {/* TAB 6: PRODUCTION & PICKUP (framing, printing, ready for pickup) */}
           {admin.activeTab === 'framing' && (
-            <AdminFramingTab
+            <AdminProductionTab
               registrations={admin.registrations}
-              onUpdateFramingStatus={admin.handleUpdateFramingStatus}
+              onSetProductionStatus={admin.handleSetProductionStatus}
             />
           )}
 
@@ -145,6 +153,9 @@ export const AdminPage: React.FC = () => {
               {workflow === 'makeup' ? <MakeupPage embedded /> : <ChooserPage embedded />}
             </div>
           )}
+
+          {admin.activeTab === 'camera' && <CameraSettings />}
+          {admin.activeTab === 'clients' && <AdminClientTypesTab />}
 
           {admin.activeTab === 'staff' && (
             <AdminStaffTab

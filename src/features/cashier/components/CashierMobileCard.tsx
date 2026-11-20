@@ -1,19 +1,24 @@
 import React from 'react';
-import { CreditCard, Banknote, Printer, PackageCheck } from 'lucide-react';
+import { CreditCard, Banknote, Printer, PackageCheck, MessageSquare } from 'lucide-react';
+import { PickupNoticeInfo } from './PickupNoticeInfo';
 import type { Registration } from '../../../types';
 import { RegistrationStatusBadge } from '../../../components/RegistrationStatusBadge';
+import { isReadyForRelease } from '../../../utils/releaseReadiness';
 import {
   formatClientName,
   formatCurrency,
   formatJobOrderNo,
   formatQueueNumber,
 } from '../../../utils/formatters';
+import { clientDetail, clientGroup } from '../../../utils/clientInfo';
 
 interface CashierMobileCardProps {
   registration: Registration;
   onOpenPayment: (reg: Registration) => void;
   onOpenPrint: (reg: Registration) => void;
   onOpenRelease: (reg: Registration) => void;
+  /** Ready for Pickup tab: show the pickup notice and a Notify button. */
+  onOpenNotify?: (reg: Registration) => void;
 }
 
 export const CashierMobileCard: React.FC<CashierMobileCardProps> = ({
@@ -21,6 +26,7 @@ export const CashierMobileCard: React.FC<CashierMobileCardProps> = ({
   onOpenPayment,
   onOpenPrint,
   onOpenRelease,
+  onOpenNotify,
 }) => {
   return (
     <div className="bg-panel border-2 border-line p-4 shadow-lux space-y-3">
@@ -41,8 +47,8 @@ export const CashierMobileCard: React.FC<CashierMobileCardProps> = ({
           {formatClientName(reg)}
         </h3>
         <p className="text-xs font-semibold text-neutral-600 mt-0.5">
-          {reg.expand?.organization?.name || 'School N/A'} •{' '}
-          {reg.expand?.course?.code || reg.course || 'General'}{' '}
+          {clientGroup(reg, true) || 'School N/A'} •{' '}
+          {clientDetail(reg) || 'General'}{' '}
           {reg.section ? `(${reg.section})` : ''}
         </p>
       </div>
@@ -81,6 +87,19 @@ export const CashierMobileCard: React.FC<CashierMobileCardProps> = ({
         </div>
       </div>
 
+      {onOpenNotify && (
+        <div className="flex items-center justify-between gap-2 border border-neutral-300 bg-canvas p-2.5">
+          <PickupNoticeInfo reg={reg} />
+          <button
+            type="button"
+            onClick={() => onOpenNotify(reg)}
+            className="btn-tactile min-h-[40px] px-3 flex items-center gap-1.5 bg-gold text-on-gold border border-line text-xs font-black uppercase cursor-pointer"
+          >
+            <MessageSquare className="w-4 h-4" /> Notify
+          </button>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 pt-1">
         {reg.status === 'pending_payment' ? (
           <button
@@ -108,14 +127,14 @@ export const CashierMobileCard: React.FC<CashierMobileCardProps> = ({
           <Printer className="w-4 h-4" /> Stub
         </button>
 
-        {reg.status !== 'pending_payment' && reg.status !== 'released' && (
+        {reg.status !== 'pending_payment' && reg.status !== 'released' && reg.status !== 'cancelled' && (
           <button
             type="button"
             onClick={() => onOpenRelease(reg)}
             className={`btn-tactile min-h-[44px] px-3 flex items-center justify-center gap-1 text-xs font-black uppercase tracking-wider border cursor-pointer ${
-              reg.balance > 0
+              reg.balance > 0 || !isReadyForRelease(reg)
                 ? 'bg-neutral-100 text-neutral-500 border-neutral-300'
-                : 'bg-emerald-700 text-white border-emerald-900'
+                : 'bg-emerald-600 text-white border-emerald-500'
             }`}
           >
             <PackageCheck className="w-4 h-4" /> Release

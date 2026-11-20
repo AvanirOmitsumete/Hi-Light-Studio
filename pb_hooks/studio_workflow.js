@@ -80,15 +80,17 @@ function withRegistration(app, id, work) {
 
 function summary(app, registration) {
   const label = (collection, field) => catalogItem(app, collection, registration.getString(field));
-  const school = label("organizations", "organization");
-  const course = label("courses", "course");
+  const walkin = registration.getString("client_kind") === "walkin";
+  const school = walkin ? null : label("organizations", "organization");
+  const course = walkin ? label("session_types", "session_type") : label("courses", "course");
   const pkg = label("packages", "package");
   return {
     id: registration.id,
     studentId: registration.getString("student_id"),
     jobOrder: registration.getString("job_order_no"),
     name: ["given_name", "middle_name", "family_name"].map((key) => registration.getString(key)).filter(Boolean).join(" "),
-    school: school?.getString("name") || "",
+    // Walk-ins: "Walk-in" (or their company) in place of the school, the session type in place of the course.
+    school: walkin ? (registration.getString("client_org") || "Walk-in") : school?.getString("name") || "",
     course: course?.getString("name") || "",
     packageName: pkg?.getString("name") || json(registration, "package_snapshot")?.name || "",
     photographyComplete: photographyComplete(registration),

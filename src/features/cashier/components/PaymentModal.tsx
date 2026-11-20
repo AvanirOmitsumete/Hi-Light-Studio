@@ -21,6 +21,8 @@ interface PaymentModalProps {
   onCashierNameChange: (name: string) => void;
   remarks: string;
   onRemarksChange: (remarks: string) => void;
+  cashReceived: string;
+  onCashReceivedChange: (amount: string) => void;
 }
 
 export const PaymentModal: React.FC<PaymentModalProps> = ({
@@ -38,6 +40,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   onCashierNameChange,
   remarks,
   onRemarksChange,
+  cashReceived,
+  onCashReceivedChange,
 }) => {
   const moneyPattern = /^\d+$/;
   const toCentavos = (amount: number) => Math.round(amount * 100);
@@ -52,7 +56,15 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     : '';
   const projectedBalance = Math.max(0, balanceCentavos - (amountError ? 0 : amountCentavos));
   const modeDisabled = (mode: CollectionMode) => isProcessing || !canUseCollectionMode(selectedReg, mode);
-  const canSubmit = !modeDisabled(paymentType) && !amountError && cashierName.trim().length > 0;
+  const isCash = paymentMethod === 'cash';
+  const cashCentavos = toCentavos(Number(cashReceived));
+  const cashError = !isCash || amountError ? ''
+    : !cashReceived ? 'Enter the cash handed over by the client.'
+    : !moneyPattern.test(cashReceived) ? 'Enter whole pesos using digits only.'
+    : cashCentavos < amountCentavos ? 'Cash received is less than the payment amount.'
+    : '';
+  const changeCentavos = isCash && !amountError && !cashError ? cashCentavos - amountCentavos : 0;
+  const canSubmit = !modeDisabled(paymentType) && !amountError && !cashError && cashierName.trim().length > 0;
 
   const selectMode = (mode: CollectionMode) => {
     if (modeDisabled(mode) || mode === paymentType) return;
@@ -212,6 +224,49 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
               />
             </div>
           </div>
+
+          {isCash && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-2 border-line bg-gold-wash p-3">
+              <div>
+                <label htmlFor="pos-cash-received" className="block text-[11px] font-black text-ink uppercase tracking-wider mb-1.5">
+                  Cash Received (₱)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    id="pos-cash-received"
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    step="1"
+                    value={cashReceived}
+                    placeholder="e.g. 2000"
+                    onKeyDown={(e) => {
+                      if (['-', '+', '.', ',', 'e', 'E'].includes(e.key)) e.preventDefault();
+                    }}
+                    onChange={(e) => {
+                      if (/^\d*$/.test(e.target.value)) onCashReceivedChange(e.target.value);
+                    }}
+                    className="min-w-0 flex-1 min-h-[44px] font-mono text-lg font-black px-3 py-1.5 border-2 border-line bg-panel text-ink"
+                  />
+                  <button
+                    type="button"
+                    disabled={Boolean(amountError)}
+                    onClick={() => onCashReceivedChange(String(amountCentavos / 100))}
+                    className="btn-tactile shrink-0 px-3 bg-obsidian text-gold text-[10px] font-black uppercase tracking-wider cursor-pointer disabled:opacity-40"
+                  >
+                    Exact
+                  </button>
+                </div>
+                {cashError && <span className="mt-1 block text-[11px] font-bold text-red-600">{cashError}</span>}
+              </div>
+              <div className="flex flex-col justify-center sm:items-end">
+                <span className="text-[11px] font-black text-ink uppercase tracking-wider">Change</span>
+                <span className="font-mono text-2xl font-black text-emerald-700" aria-live="polite">
+                  {formatCurrency(changeCentavos / 100, { exact: true })}
+                </span>
+              </div>
+            </div>
+          )}
 
           <div>
             <label className="block text-[11px] font-black text-ink uppercase tracking-wider mb-1.5">

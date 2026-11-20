@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Filter, Search } from 'lucide-react';
 
 type FilterOption = { id: string; label: string };
@@ -17,6 +17,12 @@ interface StudentDirectoryFiltersProps<Column extends string, Key extends string
   onToggleColumn: (id: Column) => void;
   onSelectAllColumns?: () => void;
   onResetColumns: () => void;
+  /** Quick filter shown between the filter button and the search box (e.g. School / Walk-in). */
+  quickFilter?: ReactNode;
+  /** Accessible name of the search box. */
+  searchLabel?: string;
+  /** Render without the panel box, to sit inside another bar (e.g. the cashier tabs). */
+  bare?: boolean;
 }
 
 const sectionClass = 'group border-b border-neutral-200 last:border-b-0';
@@ -38,6 +44,9 @@ export function StudentDirectoryFilters<Column extends string, Key extends strin
   onToggleColumn,
   onSelectAllColumns,
   onResetColumns,
+  quickFilter,
+  searchLabel = 'Search client registrations',
+  bare = false,
 }: StudentDirectoryFiltersProps<Column, Key>) {
   const [open, setOpen] = useState(false);
   const [desktopMaxHeight, setDesktopMaxHeight] = useState<number>();
@@ -99,9 +108,9 @@ export function StudentDirectoryFilters<Column extends string, Key extends strin
   }, [open]);
 
   return (
-    <div className="bg-panel border-2 border-line shadow-lux p-4">
+    <div className={bare ? '' : 'bg-panel border-2 border-line shadow-lux p-4'}>
       <div ref={container} className="relative">
-        <div className="flex items-stretch gap-2">
+        <div className="flex flex-wrap sm:flex-nowrap items-stretch gap-2">
           <button
             ref={trigger}
             type="button"
@@ -121,11 +130,12 @@ export function StudentDirectoryFilters<Column extends string, Key extends strin
               </span>
             )}
           </button>
-          <div className="relative flex min-w-0 flex-1">
+          {quickFilter}
+          <div className={`relative flex min-w-0 flex-1 ${quickFilter ? 'basis-full sm:basis-auto' : ''}`}>
             <Search aria-hidden="true" className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
             <input
               type="search"
-              aria-label="Search student registrations"
+              aria-label={searchLabel}
               placeholder={searchPlaceholder}
               value={query}
               onChange={(event) => onQueryChange(event.target.value)}

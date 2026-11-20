@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Registration } from '../../../types';
 import { formatCurrency } from '../../../utils/formatters';
+import { releaseBlocker } from '../../../utils/releaseReadiness';
+import { clientSummary } from '../../../utils/clientInfo';
 
 interface ReleaseDeliverableModalProps {
   registration: Registration;
@@ -23,9 +25,11 @@ export const ReleaseDeliverableModal: React.FC<ReleaseDeliverableModalProps> = (
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const hasOutstandingBalance = (registration.balance || 0) > 0;
+  const notReadyReason = releaseBlocker(registration);
+  const canRelease = !hasOutstandingBalance && !notReadyReason;
 
   const handleConfirm = async () => {
-    if (hasOutstandingBalance) return;
+    if (!canRelease) return;
     if (!claimedBy.trim() || !inspected) return;
 
     setIsSubmitting(true);
@@ -64,13 +68,23 @@ export const ReleaseDeliverableModal: React.FC<ReleaseDeliverableModalProps> = (
             {registration.family_name}, {registration.given_name}
           </div>
           <div className="text-neutral-600">
-            {registration.expand?.organization?.name || 'School'} • {registration.expand?.course?.code || 'Course'}
+            {clientSummary(registration, true).replace(' · ', ' • ') || 'School • Course'}
           </div>
           <div className="pt-2 flex justify-between border-t border-neutral-200">
             <span>Package: {registration.expand?.package?.name || 'Package'}</span>
             <span className="font-black text-ink">{formatCurrency(registration.total_amount)}</span>
           </div>
         </div>
+
+        {/* Production Readiness Block: the server enforces the same gate */}
+        {notReadyReason && (
+          <div className="p-4 bg-amber-50 border-2 border-amber-500 text-xs font-mono space-y-1.5">
+            <div className="font-black text-amber-800 uppercase tracking-wide">
+              ⏳ Not Ready for Release
+            </div>
+            <p className="text-amber-900 leading-relaxed">{notReadyReason}</p>
+          </div>
+        )}
 
         {/* Balance Verification Block (T048 / AC022 Enforcement) */}
         {hasOutstandingBalance ? (
@@ -104,8 +118,12 @@ export const ReleaseDeliverableModal: React.FC<ReleaseDeliverableModalProps> = (
           <div className="p-3 bg-emerald-50 border-2 border-emerald-600 text-xs font-mono space-y-1">
             <div className="font-black text-emerald-800 uppercase tracking-wide flex items-center gap-2">
               <span>✓ FULLY SETTLED</span>
-              <span>•</span>
-              <span>AUTHORIZED FOR RELEASE</span>
+              {!notReadyReason && (
+                <>
+                  <span>•</span>
+                  <span>AUTHORIZED FOR RELEASE</span>
+                </>
+              )}
             </div>
             <p className="text-emerald-900">
               Total of {formatCurrency(registration.total_amount)} has been settled in full.
@@ -114,7 +132,7 @@ export const ReleaseDeliverableModal: React.FC<ReleaseDeliverableModalProps> = (
         )}
 
         {/* Claim Verification Form */}
-        {!hasOutstandingBalance && (
+        {canRelease && (
           <div className="space-y-4 font-mono text-xs">
             <div>
               <label className="block font-bold uppercase text-ink mb-1">
@@ -154,7 +172,7 @@ export const ReleaseDeliverableModal: React.FC<ReleaseDeliverableModalProps> = (
           >
             Cancel
           </button>
-          {!hasOutstandingBalance && (
+          {canRelease && (
             <button
               type="button"
               disabled={!claimedBy.trim() || !inspected || isSubmitting}

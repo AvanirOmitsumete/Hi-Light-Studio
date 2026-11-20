@@ -53,7 +53,7 @@ export const ContactDetailsSection: React.FC<ContactDetailsSectionProps> = ({
             {...validationProps('email', errors.email)}
             type="email"
             required
-            placeholder="graduate@email.com"
+            placeholder="name@email.com"
             value={email}
             onChange={(e) => onEmailChange(e.target.value)}
             className="w-full min-h-[48px] text-sm px-3.5 py-2.5 border border-neutral-400 focus:border-line aria-invalid:border-red-600 aria-invalid:focus:border-red-600 bg-canvas focus:bg-panel font-semibold"

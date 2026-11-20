@@ -6,15 +6,22 @@ import { CashierTable } from './components/CashierTable';
 import { PaymentModal } from './components/PaymentModal';
 import { PrintReceiptModal } from './components/PrintReceiptModal';
 import { ReleaseDeliverableModal } from './components/ReleaseDeliverableModal';
+import { NotifyPickupModal } from './components/NotifyPickupModal';
+import { useStudioSettings } from '../../hooks/useStudioSettings';
 
 export const CashierPage: React.FC = () => {
   const cashier = useCashierState();
+  const { pickupMessage } = useStudioSettings();
 
   return (
     <div className="w-full max-w-[1680px] mx-auto px-4 sm:px-6 lg:px-8 xl:px-12 py-6 sm:py-8">
       {/* Header Banner */}
       <CashierHeader
         totalCollectedToday={cashier.totalCollectedToday}
+        paymentsToday={cashier.paymentsToday}
+        refundsToday={cashier.refundsToday}
+        refundedToday={cashier.refundedToday}
+        lastPaymentAt={cashier.lastPaymentAt}
         onRefresh={cashier.fetchRegistrations}
       />
 
@@ -25,17 +32,31 @@ export const CashierPage: React.FC = () => {
         pendingCount={cashier.pendingCount}
         paidCount={cashier.paidCount}
         balanceCount={cashier.balanceCount}
+        readyCount={cashier.readyCount}
+        registrations={cashier.registrations}
+        clientGroup={cashier.clientGroup}
+        onClientGroupChange={cashier.setClientGroup}
         searchQuery={cashier.searchQuery}
         onSearchChange={cashier.setSearchQuery}
+        filters={cashier.filters}
+        filterOptions={cashier.filterOptions}
+        onToggleFilter={cashier.toggleFilter}
+        onClearFilters={cashier.clearFilters}
+        visibleColumns={cashier.visibleColumns}
+        onToggleColumn={cashier.toggleColumn}
+        onResetColumns={cashier.resetColumns}
       />
 
       <CashierTable
         registrations={cashier.filteredRegistrations}
+        visibleColumns={cashier.visibleColumns}
         loading={cashier.loading}
         filtered={Boolean(cashier.searchQuery.trim()) || cashier.registrations.length > 0}
         onOpenPayment={cashier.openPaymentModal}
-        onOpenPrint={(reg) => cashier.openPrintModal(reg, 'customer')}
+        onOpenPrint={(reg) => cashier.openPrintModal(reg)}
         onOpenRelease={cashier.openReleaseModal}
+        pickupMode={cashier.activeTab === 'ready'}
+        onOpenNotify={cashier.openNotifyModal}
       />
 
       {/* PAYMENT COLLECTION MODAL */}
@@ -55,6 +76,8 @@ export const CashierPage: React.FC = () => {
           onCashierNameChange={cashier.setCashierName}
           remarks={cashier.remarks}
           onRemarksChange={cashier.setRemarks}
+          cashReceived={cashier.cashReceived}
+          onCashReceivedChange={cashier.setCashReceived}
         />
       )}
 
@@ -62,8 +85,7 @@ export const CashierPage: React.FC = () => {
       {cashier.printReg && (
         <PrintReceiptModal
           registration={cashier.printReg}
-          copyType={cashier.printCopyType}
-          onCopyTypeChange={cashier.setPrintCopyType}
+          paymentId={cashier.printPaymentId}
           cashierName={cashier.cashierName}
           onClose={cashier.closePrintModal}
         />
@@ -76,6 +98,16 @@ export const CashierPage: React.FC = () => {
           onClose={cashier.closeReleaseModal}
           onConfirmRelease={cashier.handleReleaseDeliverable}
           onOpenPaymentModal={cashier.openPaymentModal}
+        />
+      )}
+
+      {/* PICKUP NOTICE (text message to the client) */}
+      {cashier.notifyReg && (
+        <NotifyPickupModal
+          registration={cashier.notifyReg}
+          template={pickupMessage}
+          onClose={cashier.closeNotifyModal}
+          onMarkNotified={cashier.markNotified}
         />
       )}
     </div>

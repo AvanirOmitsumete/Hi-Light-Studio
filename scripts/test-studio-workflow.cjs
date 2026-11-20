@@ -1,8 +1,8 @@
 const assert = require('node:assert/strict');
 const { spawn, execFileSync } = require('node:child_process');
 const { once } = require('node:events');
-const { mkdtemp, mkdir, writeFile, readdir, readFile, copyFile, link, stat, rm } = require('node:fs/promises');
-const { createHash, randomUUID } = require('node:crypto');
+const { mkdtemp, mkdir, writeFile, readdir, readFile, copyFile, link, stat, rm, utimes } = require('node:fs/promises');
+const { createHash, randomBytes, randomUUID } = require('node:crypto');
 const { createServer } = require('node:net');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
@@ -63,6 +63,10 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
       (id, job_order_no, family_name, given_name, status, add_ons, paid_amount, total_amount, balance, payment_status)
       VALUES (?, '00050', 'Dela Cruz', 'Juan Carlos', 'done_shooting', ?, 1000, 1500, 500, 'downpayment')`)
       .run(legacyId, JSON.stringify([legacyAddon]));
+    legacyDb.prepare(`INSERT INTO payments
+      (id, registration, amount, payment_type, payment_method, cash_tendered, receipt_no, status, created, updated)
+      VALUES ('legacypay00001', ?, 1000, 'additional', 'cash', 1000, 'REC-legacy-receipt', 'completed',
+        '2026-01-05 01:00:00.000Z', '2026-01-05 01:00:00.000Z')`).run(legacyId);
   } finally { legacyDb.close(); }
   server = spawn(executable, ['serve', '--http', host.slice(7), ...flags], options);
   for (const stream of [server.stdout, server.stderr]) stream.on('data', (chunk) => { logs += chunk; });
@@ -119,14 +123,14 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   const chooser = await createStaff('testchooser', 'chooser');
   const otherChooser = await createStaff('otherchooser', 'chooser');
   let sequence = 0;
-  async function register(pkg, addOns = [], expected = 200) {
+  async function register(pkg, addOns = [], expected = 200, fields = {}) {
     const studentId = 'WF-' + ++sequence;
     const form = new FormData();
     for (const [key, value] of Object.entries({
       family_name: 'Dela Cruz', given_name: 'Juan Carlos', middle_name: 'D',
       organization: school.id, level: level.id, course: course.id, package: pkg.id, student_id: studentId,
       terms_accepted: 'true', email: 'person@example.test', add_ons: JSON.stringify(addOns),
-      status: 'shooting', paid_amount: '1000',
+      status: 'shooting', paid_amount: '1000', ...fields,
     })) form.set(key, value);
     form.set('signature', new Blob([png], { type: 'image/png' }), 'signature.png');
     const { payload } = await send(records('registrations'), { method: 'POST', body: form, status: expected });
@@ -135,11 +139,11 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
     assert.equal(payload.paid_amount, 0);
     return payload;
   }
-  async function pay(student, amount, type = 'full', status = 200) {
-    await send(records('payments'), { token: cashier, method: 'POST', status, body: {
+  async function pay(student, amount, type = 'full', status = 200, extra = {}) {
+    return (await send(records('payments'), { token: cashier, method: 'POST', status, body: {
       registration: student.id, amount, cashier_name: 'Test cashier', payment_type: type,
-      payment_method: 'cash', cash_tendered: amount, receipt_no: `RECEIPT-${student.id}-${type}`,
-    } });
+      payment_method: 'cash', cash_tendered: amount, ...extra,
+    } })).payload;
   }
   const contest = (student, actor, action, status = 200, body) => send(`${api}/makeup/${student.id}/${action}`, {
     method: 'POST', token: actor.token || actor, status, body: { version: '0', ...body },
@@ -158,6 +162,9 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   const legacy = (await registrations({ id: legacyId })).payload;
   assert.match(legacy.makeup_service, /makeup/i);
   assert.equal(legacy.balance, 500);
+  // The receipt upgrade backfills balances on existing payments and keeps their receipt numbers.
+  const legacyPayment = (await send(records('payments', 'legacypay00001'), { token: admin })).payload;
+  assert.deepEqual([legacyPayment.receipt_no, legacyPayment.balance_before, legacyPayment.balance_after], ['REC-legacy-receipt', 1500, 500]);
   assert.equal(legacy.status, 'done_shooting');
   const builtInAddOn = (await send(records('add_ons'))).payload.items.find((item) => item.code === 'ADD-HAIRMAKEUP');
   assert.equal(builtInAddOn.requires_mua, true);
@@ -281,7 +288,14 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   assert.ok((await queue(artists[2])).some((row) => row.id === cancelledPayment.id));
   const transactions = (await send(records('payments'), { token: admin })).payload.items;
   const receipt = transactions.find((item) => item.registration === cancelledPayment.id);
-  await send(records('payments', receipt.id), { token: admin, method: 'PATCH', body: { status: 'voided' } });
+  // Voids go through the void route (who, when, why); direct edits of a saved payment are refused.
+  await send(records('payments', receipt.id), { token: admin, method: 'PATCH', body: { status: 'voided' }, status: 403 });
+  await send(`${api}/payments/${receipt.id}/void`, { method: 'POST', token: cashier, body: { reason: 'wrong client' }, status: 403 });
+  await send(`${api}/payments/${receipt.id}/void`, { method: 'POST', token: admin, body: { reason: '' }, status: 400 });
+  const voided = (await send(`${api}/payments/${receipt.id}/void`, { method: 'POST', token: admin, body: { reason: 'wrong client' } })).payload;
+  assert.deepEqual([voided.status, voided.void_reason, Boolean(voided.voided_at && voided.voided_by)], ['voided', 'wrong client', true]);
+  await send(`${api}/payments/${receipt.id}/void`, { method: 'POST', token: admin, body: { reason: 'again' }, status: 409 });
+  await send(records('payments', receipt.id), { token: admin, method: 'DELETE', status: 403 });
   await contest(cancelledPayment, artists[2], 'claim', 409);
   assert.ok(!(await queue(artists[2])).some((row) => row.id === cancelledPayment.id));
   await contest(paused, admin, 'release', 200, { artistId: artists[0].id });
@@ -404,6 +418,36 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   await pay(both, 550, 'initial');
   await pay(both, 550, 'initial', 400);
   await pay(both, 550, 'additional');
+
+  // Official receipts: numbers, balances and change are assigned by the server and frozen.
+  const receipts = (await send(records('payments') + '?perPage=500&sort=created', { token: admin })).payload.items
+    .filter((item) => item.registration === both.id);
+  assert.deepEqual(receipts.map((item) => [item.balance_before, item.balance_after]), [[1100, 550], [550, 0]]);
+  assert.ok(receipts.every((item) => /^OR-\d{6}$/.test(item.receipt_no)), JSON.stringify(receipts.map((item) => item.receipt_no)));
+  assert.equal(Number(receipts[1].receipt_no.slice(3)), Number(receipts[0].receipt_no.slice(3)) + 1);
+  const withChange = await register(standard);
+  await pay(withChange, 1000, 'full', 400, { cash_tendered: 900 });
+  const changed = await pay(withChange, 1000, 'full', 200, {
+    cash_tendered: 1500, change_amount: 0, receipt_no: 'FAKE-1', balance_before: 9, balance_after: 9,
+  });
+  assert.deepEqual([changed.cash_tendered, changed.change_amount, changed.balance_before, changed.balance_after], [1500, 500, 1000, 0]);
+  assert.equal(Number(changed.receipt_no.slice(3)), Number(receipts[1].receipt_no.slice(3)) + 1);
+  // Saved payments can't be edited at all through the API (not even remarks); voids use the void route.
+  for (const body of [{ receipt_no: 'OR-999999' }, { amount: 900 }, { change_amount: 0 }, { balance_after: 10 }, { remarks: 'Checked' }]) {
+    await send(records('payments', changed.id), { token: admin, method: 'PATCH', body, status: 403 });
+  }
+  // A payment sent as "voided" is saved as a real, completed payment.
+  const sneaky = await register(standard);
+  assert.equal((await pay(sneaky, 1000, 'full', 200, { status: 'voided' })).status, 'completed');
+  // A retried request with the same client_key is refused; the station then finds the saved payment by that key.
+  const retried = await register(standard);
+  const key = randomUUID();
+  await pay(retried, 500, 'initial', 200, { payment_method: 'gcash', cash_tendered: 5000, client_key: key });
+  await pay(retried, 100, 'additional', 200, { client_key: 'other-' + key });
+  await pay(retried, 100, 'additional', 400, { client_key: 'other-' + key });
+  const found = (await send(records('payments') + '?filter=' + encodeURIComponent(`client_key = '${key}'`), { token: cashier })).payload.items;
+  assert.deepEqual(found.map((item) => [item.amount, item.cash_tendered, item.change_amount]), [[500, 0, 0]]);
+  assert.equal((await registrations(retried)).payload.balance, 400);
   const waitingFor = async (student) => (await queue(artists[2])).filter((row) => row.id === student.id);
   await patchCatalog('packages', prepared, { is_active: false });
   await register(prepared, [], 400);
@@ -536,6 +580,260 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   const bookedDetail = (await report()).rows.find((row) => row.id === artists[3].id).details.find((detail) => detail.jobId === booked.id);
   assert.equal(bookedDetail.serviceId, makeupType.id);
   assert.equal(bookedDetail.serviceName, 'Premium Makeup');
+
+  // Daily queue numbers keep counting within the studio day (Asia/Manila).
+  const pickup = await register(standard);
+  const dropped = await register(standard);
+  assert.equal(dropped.queue_number, pickup.queue_number + 1);
+  assert.equal(Number(dropped.job_order_no), Number(pickup.job_order_no) + 1);
+
+  // Release gate: full payment alone is not enough; production must be marked ready.
+  const release = { status: 'released', framing_status: 'released', claimed_by: 'Juan', released_at: new Date().toISOString() };
+  await pay(pickup, 1000);
+  await registrations(pickup, cashier, release, 400);
+  // Production status is set in bulk by admins; unpaid and unshot orders are skipped.
+  const production = (body, token = admin, status = 200) =>
+    send(api + '/production-status', { method: 'POST', token, body, status }).then((r) => r.payload);
+  await production({ ids: [pickup.id], status: 'ready_for_pickup' }, cashier, 403);
+  await production({ ids: [pickup.id], status: 'released' }, admin, 400);
+  assert.deepEqual(await production({ ids: [pickup.id, dropped.id], status: 'ready_for_pickup' }),
+    { updated: 0, unchanged: 0, skipped: { cancelled: 0, released: 0, unpaid: 1, notShot: 1, missing: 0 } });
+  await shoot(pickup, 'shooting');
+  await shoot(pickup, 'done_shooting');
+  await registrations(pickup, cashier, release, 400);
+  assert.equal((await production({ ids: [pickup.id], status: 'in_production' })).updated, 1);
+  assert.equal((await registrations(pickup)).payload.ready_at, '');
+  assert.equal((await production({ ids: [pickup.id], status: 'ready_for_pickup' })).updated, 1);
+  let ready = (await send(records('registrations', pickup.id), { token: cashier })).payload;
+  assert.deepEqual([ready.status, ready.framing_status, Boolean(ready.ready_at), ready.pickup_notify_count], ['ready_for_pickup', 'ready_for_pickup', true, 0]);
+  // Moving production back clears readiness (and the main status follows).
+  await production({ ids: [pickup.id], status: 'in_production' });
+  ready = (await send(records('registrations', pickup.id), { token: cashier })).payload;
+  assert.deepEqual([ready.status, ready.ready_at], ['done_shooting', '']);
+  await send(api + '/pickup-notified/' + pickup.id, { method: 'POST', token: cashier, status: 409 });
+  await production({ ids: [pickup.id], status: 'ready_for_pickup' });
+  // The cashier records each pickup notice; the fields cannot be edited directly.
+  await send(api + '/pickup-notified/' + pickup.id, { method: 'POST', token: photographer, status: 403 });
+  const notice = (await send(api + '/pickup-notified/' + pickup.id, { method: 'POST', token: cashier })).payload;
+  assert.equal(notice.pickup_notify_count, 1);
+  assert.ok(notice.pickup_notified_at && notice.pickup_notified_by);
+  await registrations(pickup, admin, { pickup_notify_count: 5 }, 403);
+  // Every release goes through the cashier's Release step with a claimant.
+  await registrations(pickup, admin, { framing_status: 'released' }, 400);
+  await registrations(pickup, cashier, { ...release, claimed_by: ' ' }, 400);
+  assert.equal((await registrations(pickup, cashier, release)).payload.status, 'released');
+  ready = (await send(records('registrations', pickup.id), { token: cashier })).payload;
+  assert.ok(ready.ready_at, 'the ready time is kept after release');
+  assert.deepEqual((await production({ ids: [pickup.id], status: 'in_production' })).skipped.released, 1);
+
+  // Cancelling keeps the job order and its payments; paid orders cannot be deleted.
+  await pay(dropped, 500, 'initial');
+  await send(records('registrations', dropped.id), { token: admin, method: 'DELETE', status: 409 });
+  // Cancel and Restore go through their routes, with a reason; direct status edits are refused.
+  await registrations(dropped, admin, { status: 'cancelled' }, 400);
+  await send(`${api}/registrations/${dropped.id}/cancel`, { method: 'POST', token: cashier, body: { reason: 'backed out' }, status: 403 });
+  const cancelledOrder = (await send(`${api}/registrations/${dropped.id}/cancel`, { method: 'POST', token: admin, body: { reason: 'client backed out' } })).payload;
+  assert.deepEqual([cancelledOrder.status, cancelledOrder.status_before_cancel, cancelledOrder.cancel_reason], ['cancelled', 'paid', 'client backed out']);
+  await pay(dropped, 500, 'additional', 400);
+  await registrations(dropped, cashier, release, 400);
+  const ledger = (await send(records('payments') + '?perPage=500', { token: admin })).payload.items;
+  assert.ok(ledger.some((item) => item.registration === dropped.id && item.amount === 500));
+  // Refunds: money given back is a separate record dated today; the payment stays as it was.
+  const refundRoute = (body, token = admin, status = 200) => send(api + '/refunds', { method: 'POST', token, body, status }).then((r) => r.payload);
+  await refundRoute({ registrationId: dropped.id, amount: 200, method: 'cash', reason: 'goodwill' }, cashier, 403);
+  await refundRoute({ registrationId: dropped.id, amount: 600, method: 'cash', reason: 'too much' }, admin, 409);
+  const refund = await refundRoute({ registrationId: dropped.id, amount: 200, method: 'gcash', reason: 'goodwill', clientKey: 'refund-test-1' });
+  assert.match(refund.refund_no, /^RF-\d{6}$/);
+  assert.equal((await refundRoute({ registrationId: dropped.id, amount: 200, method: 'gcash', reason: 'goodwill', clientKey: 'refund-test-1' })).id, refund.id);
+  let droppedNow = (await registrations(dropped)).payload;
+  assert.deepEqual([droppedNow.paid_amount, droppedNow.refunded_amount], [300, 200]);
+  assert.ok(ledger.find((item) => item.registration === dropped.id).status === 'completed', 'the refunded payment is not changed');
+  // The client signs the refund slip on screen: admin only, saved once, a protected file.
+  const signRefund = (token, status, withFile = true) => {
+    const form = new FormData();
+    if (withFile) form.set('signature', new Blob([png], { type: 'image/png' }), 'refund-signature.png');
+    return send(`${api}/refunds/${refund.id}/signature`, { method: 'POST', token, body: form, status }).then((r) => r.payload);
+  };
+  await signRefund(cashier, 403);
+  await signRefund(admin, 400, false);
+  const signedRefund = await signRefund(admin, 200);
+  assert.ok(signedRefund.signature && signedRefund.signed_at && signedRefund.signed_witness, 'the signature, time and witness are saved');
+  assert.match((await signRefund(admin, 409)).message, /already signed/);
+  const signatureFile = `/api/files/refunds/${refund.id}/${signedRefund.signature}`;
+  await send(signatureFile, { status: 404 });
+  const fileToken = (await send('/api/files/token', { method: 'POST', token: admin })).payload.token;
+  assert.ok((await send(`${signatureFile}?token=${fileToken}`)).payload.length > 0, 'staff can open the signature with a file token');
+  // Restore returns to the status before cancelling; the balance counts the refund.
+  const restored = (await send(`${api}/registrations/${dropped.id}/restore`, { method: 'POST', token: admin })).payload;
+  assert.deepEqual([restored.status, restored.paid_amount, restored.balance], ['paid', 300, 700]);
+  await pay(dropped, 700, 'additional');
+  droppedNow = (await registrations(dropped)).payload;
+  assert.deepEqual([droppedNow.balance, droppedNow.payment_status], [0, 'fully_paid']);
+  await send(`${api}/registrations/${dropped.id}/cancel`, { method: 'POST', token: admin, body: { reason: 'cancel again for later checks' } });
+  // Fully refunded before the shoot: Restore puts it back to Pending Payment, not Paid.
+  const refundedAll = await register(standard);
+  await pay(refundedAll, 500, 'initial');
+  await send(`${api}/registrations/${refundedAll.id}/cancel`, { method: 'POST', token: admin, body: { reason: 'client backed out' } });
+  await refundRoute({ registrationId: refundedAll.id, amount: 500, method: 'cash', reason: 'full refund' });
+  const restoredUnpaid = (await send(`${api}/registrations/${refundedAll.id}/restore`, { method: 'POST', token: admin })).payload;
+  assert.deepEqual(
+    [restoredUnpaid.status, restoredUnpaid.paid_amount, restoredUnpaid.balance, restoredUnpaid.payment_status],
+    ['pending_payment', 0, 1000, 'unpaid']);
+  await send(records('registrations', refundedAll.id), { token: admin, method: 'DELETE', status: 409 });
+  const mistake = await register(standard);
+  await send(records('registrations', mistake.id), { token: admin, method: 'DELETE', status: 204 });
+
+  // Walk-in clients (family portraits, events outside the studio) next to school registrations.
+  assert.equal((await registrations({ id: legacyId })).payload.client_kind, 'school', 'Existing job orders become school clients.');
+  assert.equal((await send(records('packages', standard.id))).payload.client_kind || 'school', 'school', 'Packages without a type are school packages.');
+  const settings = (await send(records('studio_settings') + "?filter=key='main'")).payload.items[0];
+  assert.deepEqual([settings.school_enabled, settings.walkin_enabled], [true, false], 'Walk-ins start switched off.');
+  assert.ok(settings.walkin_terms.length > 3);
+  const sessionList = (await send(records('session_types') + '?sort=order')).payload.items;
+  const family = sessionList.find((type) => type.code === 'FAM');
+  const wedding = sessionList.find((type) => type.code === 'WED');
+  assert.ok(family && !family.on_location && wedding?.on_location);
+  const walkinPackage = await create('packages', { code: 'FAM-1', name: 'Family Session', amount: 2500, is_active: true, client_kind: 'walkin' });
+  async function walkIn(fields, status = 200) {
+    const form = new FormData();
+    for (const [key, value] of Object.entries({
+      client_kind: 'walkin', family_name: 'Reyes', given_name: 'Family', email: 'family@example.test', mobile_number: '09170000000',
+      terms_accepted: 'true', add_ons: '[]', package: walkinPackage.id, session_type: family.id, ...fields,
+    })) form.set(key, value);
+    form.set('signature', new Blob([png], { type: 'image/png' }), 'signature.png');
+    return (await send(records('registrations'), { method: 'POST', body: form, status })).payload;
+  }
+  let refused = await walkIn({}, 400);
+  assert.match(refused.message, /Walk-in registrations are closed/);
+  await send(records('studio_settings', settings.id), { token: cashier, method: 'PATCH', body: { walkin_enabled: true }, status: 404 });
+  await send(records('studio_settings', settings.id), { token: admin, method: 'PATCH', body: { walkin_enabled: true } });
+  refused = await walkIn({ package: standard.id }, 400);
+  assert.ok(refused.data.package, 'A school package is refused for a walk-in client.');
+  refused = await walkIn({ session_type: wedding.id }, 400);
+  assert.ok(refused.data.event_date && refused.data.event_venue, 'Events outside the studio need a date and venue.');
+  const event = await walkIn({
+    session_type: wedding.id, event_date: '2026-12-12 00:00:00.000Z', event_venue: 'Marco Polo Plaza', client_org: 'Reyes-Cruz Wedding',
+    organization: school.id, course: course.id, student_id: 'SHOULD-CLEAR',
+  });
+  assert.deepEqual([event.client_kind, event.organization, event.course, event.student_id, event.event_venue],
+    ['walkin', '', '', '', 'Marco Polo Plaza'], 'Walk-ins carry no school details.');
+  const studio = await walkIn({ event_date: '2026-12-12 00:00:00.000Z', event_venue: 'ignored for studio sessions' });
+  assert.deepEqual([studio.event_date, studio.event_venue], ['', ''], 'In-studio sessions drop the event date and venue.');
+  await pay(event, 2500);
+  assert.equal((await registrations(event)).payload.status, 'paid');
+  const walkinFolder = (await send(`${api}/photo-folder/${event.id}`, { method: 'POST', token: photographer })).payload.path;
+  assert.match(walkinFolder.replaceAll('\\', '/'), /\/WALK-IN\/\d{4}-\d{2}\/\d{5}_Reyes_Family_[a-z0-9]+$/, 'Walk-in photos are filed by month.');
+  // School clients cannot pick walk-in packages, and each type can be switched off.
+  const schoolForm = await register(standard);
+  assert.equal(schoolForm.client_kind, 'school');
+  await send(records('studio_settings', settings.id), { token: admin, method: 'PATCH', body: { school_enabled: false } });
+  await register(standard, [], 400);
+  await send(records('studio_settings', settings.id), { token: admin, method: 'PATCH', body: { school_enabled: true, walkin_enabled: false } });
+  const bothPackage = await create('packages', { code: 'ANY', name: 'Any client', amount: 900, is_active: true, client_kind: 'both' });
+  await register(bothPackage);
+  // A session type in use can only be switched off; an unused one can be removed.
+  await send(records('session_types', wedding.id), { token: admin, method: 'DELETE', status: 409 });
+  const unused = await create('session_types', { name: 'Graduation Ball', code: 'BALL', on_location: true, is_active: true });
+  await send(records('session_types', unused.id), { token: cashier, method: 'DELETE', status: 404 });
+  await send(records('session_types', unused.id), { token: admin, method: 'DELETE', status: 204 });
+  // The overall export lists walk-ins on their own sheet with the session code.
+  const overall = (await send(api + '/student-excel', { token: admin })).payload;
+  const walkinRow = overall.rows.find((row) => row.jobOrder === event.job_order_no);
+  assert.deepEqual([walkinRow.level, walkinRow.course], ['walkin', 'WED']);
+  // Cancelled orders carry who, when and why for the CANCELLED sheet; active ones carry nothing.
+  const droppedRow = overall.rows.find((row) => row.jobOrder === dropped.job_order_no);
+  assert.deepEqual([droppedRow.cancelled, droppedRow.cancellation.reason], [true, 'cancel again for later checks']);
+  assert.ok(droppedRow.cancellation.at && droppedRow.cancellation.by && droppedRow.cancellation.statusBefore, 'the export says when, who and the status before');
+  assert.equal(walkinRow.cancellation, null);
+
+  // A course can be added under a level the school does not have yet (e.g. Elementary);
+  // the level is created once, after the school's existing levels, and reused by name.
+  await send(api + '/school-courses', { method: 'POST', token: admin, status: 400, body: { schoolId: school.id, name: 'Grade 6', code: 'G6' } });
+  const grade6 = (await send(api + '/school-courses', {
+    method: 'POST', token: admin, status: 201, body: { schoolId: school.id, levelName: '  Elementary ', name: 'Grade 6', code: 'G6' },
+  })).payload;
+  const grade5 = (await send(api + '/school-courses', {
+    method: 'POST', token: admin, status: 201, body: { schoolId: school.id, levelName: 'elementary', name: 'Grade 5', code: 'G5' },
+  })).payload;
+  assert.equal(grade5.level, grade6.level);
+  const elementary = (await send(records('levels', grade6.level), { token: admin })).payload;
+  assert.deepEqual([elementary.organization, elementary.name, elementary.order > (level.order || 0)], [school.id, 'Elementary', true]);
+  // Students at other levels appear in the export under their level's name.
+  const pupil = await register(standard, [], 200, { level: grade6.level, course: grade6.course_id });
+  const pupilRow = (await send(api + '/student-excel', { token: admin })).payload.rows.find((row) => row.jobOrder === pupil.job_order_no);
+  assert.deepEqual([pupilRow.level, pupilRow.course], ['ELEMENTARY', 'G6']);
+
+  // Camera hot-folder import: finished photos move from the camera's output
+  // folder into the folder of the client linked to the camera.
+  const cameraDir = join(home, 'camera');
+  await mkdir(join(cameraDir, 'DCIM'), { recursive: true });
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64), Buffer.from([0xff, 0xd9])]);
+  const settled = new Date(Date.now() - 60_000);
+  async function drop(name, body = jpeg, fresh = false) {
+    const file = join(cameraDir, name);
+    await writeFile(file, body);
+    if (!fresh) await utimes(file, settled, settled);
+  }
+  const booth = { name: 'Booth 1', watch_folder: cameraDir, enabled: true, include_subfolders: true, import_raw: true };
+  await send(records('camera_stations'), { token: admin, method: 'POST', status: 400, body: { ...booth, watch_folder: photos } });
+  await send(records('camera_stations'), { token: admin, method: 'POST', status: 400, body: { ...booth, watch_folder: join(home, 'missing') } });
+  await send(records('camera_stations'), { token: cashier, method: 'POST', status: 400, body: booth });
+  const camera = await create('camera_stations', { ...booth, active_registration: dropped.id }, photographer);
+  assert.equal(camera.active_registration, '', 'Session state cannot be set through the collection API.');
+  await send(records('camera_stations'), { token: admin, method: 'POST', status: 400, body: { ...booth, name: 'Booth 2' } });
+  const cameraApi = (action, body, { token = photographer, status = 200 } = {}) =>
+    send(`${api}/camera/${camera.id}/${action}`, { method: 'POST', token, body, status }).then((r) => r.payload);
+  await cameraApi('scan', undefined, { token: cashier, status: 403 });
+  await drop('before-session.jpg');
+  let camState = await cameraApi('scan');
+  assert.equal(camState.client, null);
+  assert.equal(camState.waiting, 1);
+  const onSet = await register(standard);
+  await cameraApi('start', { registration: onSet.id }, { status: 400 });
+  await pay(onSet, 1000);
+  await shoot(onSet, 'shooting');
+  camState = await cameraApi('start', { registration: onSet.id });
+  assert.equal(camState.client.id, onSet.id);
+  assert.equal(camState.waiting, 1, 'Files from before the session wait for an explicit decision.');
+  await drop('IMG_0001.jpg');
+  await drop('DCIM/IMG_0002.JPG');
+  await drop('IMG_0003.CR3', Buffer.from('raw sensor data'));
+  await drop('notes.txt', Buffer.from('not a photo'));
+  await drop('fake.jpg', Buffer.from('this is not a jpeg file'));
+  await drop('fresh.jpg', jpeg, true);
+  camState = await cameraApi('scan');
+  assert.equal(camState.sessionImported, 3, camState.lastError);
+  const clientDir = (await send(`${api}/photo-folder/${onSet.id}`, { method: 'POST', token: photographer })).payload.path;
+  assert.deepEqual((await readdir(clientDir)).sort(), ['IMG_0001.jpg', 'IMG_0002.JPG', 'RAW', 'selected', 'unselected']);
+  assert.deepEqual(await readdir(join(clientDir, 'RAW')), ['IMG_0003.CR3']);
+  assert.deepEqual((await readdir(cameraDir)).filter((name) => !name.startsWith('.')).sort(),
+    ['DCIM', 'before-session.jpg', 'fake.jpg', 'fresh.jpg', 'notes.txt']);
+  assert.equal(camState.client.photoCount, 2);
+  await drop('IMG_0001.jpg');
+  camState = await cameraApi('scan');
+  assert.ok((await readdir(clientDir)).includes('IMG_0001_2.jpg'), 'A repeated file name gets a suffix instead of overwriting.');
+  camState = await cameraApi('claim-waiting');
+  assert.equal(camState.waiting, 0);
+  for (const name of ['before-session.jpg', 'fresh.jpg']) assert.ok((await readdir(clientDir)).includes(name), name);
+  // An import interrupted after the file was claimed finishes on the next scan.
+  const staged = join(cameraDir, '.studioflow-importing', onSet.id);
+  await mkdir(staged, { recursive: true });
+  await writeFile(join(staged, 'interrupted.jpg'), jpeg);
+  await cameraApi('scan');
+  assert.ok((await readdir(clientDir)).includes('interrupted.jpg'));
+  // Ending the session flushes the last shot even before it settles.
+  const large = Buffer.concat([jpeg.subarray(0, 4), randomBytes(2_500_000), Buffer.from([0xff, 0xd9])]);
+  await drop('last.jpg', large, true);
+  camState = await cameraApi('end', { registration: onSet.id });
+  assert.equal(camState.client, null);
+  assert.ok((await readdir(clientDir)).includes('last.jpg'));
+  assert.equal(Buffer.compare(await readFile(join(clientDir, 'last.jpg')), large), 0);
+  await drop('next-client.jpg');
+  camState = await cameraApi('scan');
+  assert.equal(camState.waiting, 2, 'Without a linked client nothing is moved.');
+  assert.deepEqual((await send(api + '/camera/browse?path=' + encodeURIComponent(home), { token: photographer })).payload.folders
+    .map((folder) => folder.name).includes('camera'), true);
+  await send(records('camera_stations', camera.id), { token: photographer, method: 'DELETE', status: 404 });
 
   // Both export formats use the same row matrix as the dashboard.
   const { muaReportTable } = await import('../src/features/admin/muaPerformance.ts');

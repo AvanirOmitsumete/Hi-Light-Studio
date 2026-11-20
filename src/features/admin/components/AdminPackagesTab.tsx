@@ -7,6 +7,7 @@ import { ConfirmModal } from '../../../components/common/ConfirmModal';
 import { useToast } from '../../../context/ToastContext';
 import { useWorkflowData } from '../../../hooks/useWorkflowData';
 import { MuaServiceCatalog } from './MuaServiceCatalog';
+import type { PackageKind } from '../useAdminData';
 
 interface AdminPackagesTabProps {
   packages: Package[];
@@ -21,6 +22,8 @@ interface AdminPackagesTabProps {
   onNewPkgPhotoLimitChange: (val: number) => void;
   newPkgRequiresMua: boolean;
   onNewPkgRequiresMuaChange: (val: boolean) => void;
+  newPkgKind: PackageKind;
+  onNewPkgKindChange: (val: PackageKind) => void;
   newPkgMuaTypes: string[];
   onNewPkgMuaTypesChange: (ids: string[]) => void;
   newPkgInclusions: string;
@@ -28,7 +31,7 @@ interface AdminPackagesTabProps {
   onAddPackage: (e: React.FormEvent) => void;
   onUpdatePackage: (
     id: string,
-    data: { name: string; code: string; amount: number; inclusions: string[]; photo_selection_limit: number; requires_mua: boolean; mua_service_types: string[] }
+    data: { name: string; code: string; amount: number; inclusions: string[]; photo_selection_limit: number; requires_mua: boolean; mua_service_types: string[]; client_kind: PackageKind }
   ) => Promise<void>;
   onTogglePackageActive: (id: string, current: boolean) => Promise<void>;
   onDeletePackage: (id: string) => Promise<void>;
@@ -51,6 +54,8 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
   onNewPkgPhotoLimitChange,
   newPkgRequiresMua,
   onNewPkgRequiresMuaChange,
+  newPkgKind,
+  onNewPkgKindChange,
   newPkgMuaTypes,
   onNewPkgMuaTypesChange,
   newPkgInclusions,
@@ -75,6 +80,7 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
   const [editPkgPhotoLimit, setEditPkgPhotoLimit] = useState(0);
   const [editPkgRequiresMua, setEditPkgRequiresMua] = useState(false);
   const [editPkgMuaTypes, setEditPkgMuaTypes] = useState<string[]>([]);
+  const [editPkgKind, setEditPkgKind] = useState<PackageKind>('school');
   const [editPkgInclusionsArray, setEditPkgInclusionsArray] = useState<string[]>([]);
 
   // Add-on Form State
@@ -113,6 +119,7 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
     setEditPkgPhotoLimit(pkg.photo_selection_limit ?? 0);
     setEditPkgRequiresMua(!!pkg.requires_mua);
     setEditPkgMuaTypes(pkg.mua_service_types ?? []);
+    setEditPkgKind((pkg.client_kind || 'school') as PackageKind);
     setEditPkgInclusionsArray(parsePackageInclusions(pkg.inclusions));
   };
 
@@ -127,6 +134,7 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
         photo_selection_limit: editPkgPhotoLimit,
         requires_mua: editPkgRequiresMua,
         mua_service_types: editPkgMuaTypes,
+        client_kind: editPkgKind,
       });
       toast.success(`Package "${editPkgName}" updated successfully`);
       setEditingPkgId(null);
@@ -260,6 +268,7 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
               />
             </div>
 
+            <PackageKindInput value={newPkgKind} onChange={onNewPkgKindChange} />
             <PhotoLimitInput value={newPkgPhotoLimit} onChange={onNewPkgPhotoLimitChange} />
             <MuaRequirementInput checked={newPkgRequiresMua} onChange={onNewPkgRequiresMuaChange}
               categories={serviceTypes} selected={newPkgMuaTypes} onSelect={onNewPkgMuaTypesChange} />
@@ -346,6 +355,7 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
                       </div>
 
                       <PhotoLimitInput value={editPkgPhotoLimit} onChange={setEditPkgPhotoLimit} />
+                      <PackageKindInput value={editPkgKind} onChange={setEditPkgKind} />
                       <MuaRequirementInput checked={editPkgRequiresMua} onChange={setEditPkgRequiresMua}
                         categories={serviceTypes} selected={editPkgMuaTypes} onSelect={setEditPkgMuaTypes} />
 
@@ -423,6 +433,7 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
 
                       {/* Inclusions Chips */}
                       <div className="mt-2 flex flex-wrap gap-1">
+                        <span className="px-2 py-0.5 text-[10px] font-bold uppercase border border-neutral-400">{PACKAGE_KIND_LABELS[(pkg.client_kind || 'school') as PackageKind]}</span>
                         <MuaRequirementBadge required={pkg.requires_mua} />
                         {!!pkg.photo_selection_limit && (
                           <span className="px-2 py-0.5 text-[10px] bg-gold-wash border border-neutral-300">Up to {pkg.photo_selection_limit} selected photos</span>
@@ -697,3 +708,22 @@ function MuaRequirementBadge({ required }: { required?: boolean }) {
     </span>
   );
 }
+
+const PACKAGE_KIND_LABELS: Record<PackageKind, string> = { school: 'For school', walkin: 'For walk-in', both: 'School & walk-in' };
+
+/** Which kiosk form offers the package. */
+const PackageKindInput: React.FC<{ value: PackageKind; onChange: (value: PackageKind) => void }> = ({ value, onChange }) => (
+  <fieldset>
+    <legend className="block text-[11px] font-black uppercase mb-1">Offered To</legend>
+    <div className="grid grid-cols-3 gap-1.5">
+      {(['school', 'walkin', 'both'] as const).map((kind) => (
+        <button key={kind} type="button" aria-pressed={value === kind} onClick={() => onChange(kind)}
+          className={`btn-tactile min-h-[38px] px-2 border text-[10px] font-black uppercase cursor-pointer ${
+            value === kind ? 'bg-obsidian text-gold border-line' : 'bg-canvas text-neutral-600 border-neutral-300'
+          }`}>
+          {kind === 'school' ? 'School' : kind === 'walkin' ? 'Walk-in' : 'Both'}
+        </button>
+      ))}
+    </div>
+  </fieldset>
+);

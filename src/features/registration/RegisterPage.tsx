@@ -9,9 +9,13 @@ import { PackageSelectionSection } from './components/PackageSelectionSection';
 import { TermsAndSignatureSection } from './components/TermsAndSignatureSection';
 import { RegistrationSummarySidebar } from './components/RegistrationSummarySidebar';
 import { RegistrationStepProgress } from './components/RegistrationStepProgress';
+import { ClientKindPicker } from './components/ClientKindPicker';
+import { WalkInDetailsSection } from './components/WalkInDetailsSection';
 
 export const RegisterPage: React.FC = () => {
   const form = useRegistrationForm();
+  const closed = form.studioLoaded && form.availableKinds.length === 0;
+  const showSchool = form.clientKind === 'school';
 
   if (form.submittedRecord) {
     return (
@@ -26,7 +30,7 @@ export const RegisterPage: React.FC = () => {
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-5 border-b border-neutral-800">
           <div>
             <span className="font-mono text-[10px] font-bold uppercase tracking-[0.25em] text-gold block mb-1.5">
-              FORM // GRADUATION &amp; PORTRAIT JOB ORDER
+              FORM // {form.isWalkIn ? 'PORTRAIT & EVENT JOB ORDER' : form.clientKind === 'school' ? 'GRADUATION PICTORIAL JOB ORDER' : 'GRADUATION, PORTRAIT & EVENT JOB ORDER'}
             </span>
             <h1 className="text-2xl sm:text-4xl font-black tracking-tight uppercase text-white leading-none">
               Client <span className="text-gold">Registration</span>
@@ -38,8 +42,11 @@ export const RegisterPage: React.FC = () => {
         </div>
 
         <p className="text-xs sm:text-sm text-neutral-300 mt-4 max-w-3xl leading-relaxed">
-          Complete your academic profile, select your portrait package, and sign below to generate
-          your official Job Order and studio queue number.
+          {form.isWalkIn
+            ? 'Tell us about your session, select your package, and sign below to generate your official Job Order and studio queue number.'
+            : form.clientKind === 'school'
+              ? 'Complete your academic profile, select your portrait package, and sign below to generate your official Job Order and studio queue number.'
+              : 'Fill in your details, select your package, and sign below to generate your official Job Order and studio queue number.'}
         </p>
       </div>
       <RegistrationStepProgress />
@@ -47,24 +54,34 @@ export const RegisterPage: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
         {/* Left Column: Form & Master Lookup (8 cols on lg) */}
         <div className="min-w-0 lg:col-span-8 space-y-6">
-          {/* Optional Master List Quick Match */}
-          <MasterListLookup
+          {closed && (
+            <div role="alert" className="bg-panel border-2 border-line p-6 text-center text-sm font-bold text-ink shadow-lux">
+              Registration is closed right now. Please ask the studio staff.
+            </div>
+          )}
+          {/* Optional Master List Quick Match (school clients) */}
+          {showSchool && <MasterListLookup
             masterList={form.masterList}
             isSearching={form.isSearching}
             onToggleSearch={() => form.setIsSearching(!form.isSearching)}
             searchName={form.searchName}
             onSearchNameChange={form.setSearchName}
             onSelectItem={form.selectFromMasterList}
-          />
+          />}
 
           {/* Main Registration Form */}
-          <form
+          {!closed && <form
             id="client-registration-form"
             noValidate
             onSubmit={form.handleSubmit}
             className="animate-enter-delay-1 space-y-8 bg-panel border-2 border-line p-5 sm:p-8 shadow-lux"
           >
+            {form.availableKinds.length > 1 && (
+              <ClientKindPicker kinds={form.availableKinds} value={form.clientKind} onChange={form.setClientKind} errors={form.errors} />
+            )}
+
             <ClientInfoSection
+              showSchool={showSchool}
               familyName={form.familyName}
               onFamilyNameChange={form.setFamilyName}
               givenName={form.givenName}
@@ -89,6 +106,24 @@ export const RegisterPage: React.FC = () => {
               errors={form.errors}
             />
 
+            {form.isWalkIn && (
+              <WalkInDetailsSection
+                sessionTypes={form.sessionTypes}
+                sessionTypeId={form.sessionTypeId}
+                onSessionTypeChange={form.setSessionTypeId}
+                selectedSession={form.selectedSession}
+                eventDate={form.eventDate}
+                onEventDateChange={form.setEventDate}
+                eventVenue={form.eventVenue}
+                onEventVenueChange={form.setEventVenue}
+                clientOrg={form.clientOrg}
+                onClientOrgChange={form.setClientOrg}
+                notes={form.notes}
+                onNotesChange={form.setNotes}
+                errors={form.errors}
+              />
+            )}
+
             <ContactDetailsSection
               mobileNumber={form.mobileNumber}
               onMobileNumberChange={form.setMobileNumber}
@@ -108,6 +143,7 @@ export const RegisterPage: React.FC = () => {
               onPaymentTypeChange={form.setPaymentType}
               totalAmount={form.totalAmount}
               errors={form.errors}
+              emptyMessage={form.clientKind ? undefined : 'Choose the type of client above to see the packages.'}
             />
 
             <TermsAndSignatureSection
@@ -115,6 +151,8 @@ export const RegisterPage: React.FC = () => {
               onTermsAcceptedChange={form.setTermsAccepted}
               onSignatureChange={form.handleSignatureChange}
               errors={form.errors}
+              walkIn={form.isWalkIn}
+              clauses={form.isWalkIn ? form.walkinTerms : undefined}
             />
 
             {/* Submit Action at the bottom of the form */}
@@ -132,7 +170,7 @@ export const RegisterPage: React.FC = () => {
                 <ArrowRight className="w-4 h-4" />
               </button>
             </div>
-          </form>
+          </form>}
         </div>
 
         {/* Right Column: Sticky Live Job Order Summary & Checkout (4 cols on lg) */}
@@ -155,6 +193,9 @@ export const RegisterPage: React.FC = () => {
             termsAccepted={form.termsAccepted}
             hasSignature={form.hasSignature}
             isSubmitting={form.isSubmitting}
+            profileLine={form.isWalkIn
+              ? [form.clientOrg.trim() || 'Walk-in', form.selectedSession?.name || 'Session not selected'].join(' • ')
+              : form.clientKind ? undefined : 'Choose the type of client'}
           />
         </aside>
       </div>

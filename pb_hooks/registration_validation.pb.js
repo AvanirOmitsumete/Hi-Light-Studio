@@ -26,31 +26,70 @@ onRecordCreateRequest((e) => {
     invalid("mobile_number", "Enter a valid Philippine mobile number, such as 0917-000-0000.");
   }
 
-  const school = record.getString("organization");
-  const level = record.getString("level");
-  const course = record.getString("course");
-  if (!school) {
-    invalid("organization", "Select your school, campus, or organization.");
-  } else if (!e.app.findRecordsByFilter("organizations", "id = {:school} && is_active = true", "", 1, 0, { school }).length) {
-    invalid("organization", "The selected school is no longer available.");
+  // Client type: school/graduation (default) or walk-in. Each must be switched on in Admin.
+  const kind = record.getString("client_kind") || "school";
+  if (!["school", "walkin"].includes(kind)) throw new BadRequestError("Invalid client type.");
+  record.set("client_kind", kind);
+  const settings = e.app.findRecordsByFilter("studio_settings", "key = 'main'", "", 1, 0)[0];
+  const enabled = kind === "school" ? (settings ? settings.getBool("school_enabled") : true) : !!settings?.getBool("walkin_enabled");
+  if (!enabled) {
+    throw new BadRequestError(kind === "school"
+      ? "School registrations are closed right now. Please ask the staff."
+      : "Walk-in registrations are closed right now. Please ask the staff.");
   }
-  if (!level) {
-    invalid("level", "Select your academic level.");
-  } else if (!e.app.findRecordsByFilter("levels", "id = {:level} && organization = {:school}", "", 1, 0, { level, school }).length) {
-    invalid("level", "The selected academic level does not belong to this school.");
-  }
-  if (!course || !e.app.findRecordsByFilter(
-    "school_courses", "school_id = {:school} && level = {:level} && course_id = {:course}",
-    "", 1, 0, { school, level, course },
-  ).length) {
-    invalid("course", "Select a course or strand for this school and academic level.");
+
+  if (kind === "school") {
+    for (const field of ["session_type", "event_date", "event_venue", "client_org"]) record.set(field, "");
+    const school = record.getString("organization");
+    const level = record.getString("level");
+    const course = record.getString("course");
+    if (!school) {
+      invalid("organization", "Select your school, campus, or organization.");
+    } else if (!e.app.findRecordsByFilter("organizations", "id = {:school} && is_active = true", "", 1, 0, { school }).length) {
+      invalid("organization", "The selected school is no longer available.");
+    }
+    if (!level) {
+      invalid("level", "Select your academic level.");
+    } else if (!e.app.findRecordsByFilter("levels", "id = {:level} && organization = {:school}", "", 1, 0, { level, school }).length) {
+      invalid("level", "The selected academic level does not belong to this school.");
+    }
+    if (!course || !e.app.findRecordsByFilter(
+      "school_courses", "school_id = {:school} && level = {:level} && course_id = {:course}",
+      "", 1, 0, { school, level, course },
+    ).length) {
+      invalid("course", "Select a course or strand for this school and academic level.");
+    }
+  } else {
+    // Walk-in: no school details; a session type, plus date and venue for events outside the studio.
+    for (const field of ["organization", "level", "course", "student_id", "section", "department"]) record.set(field, "");
+    for (const field of ["event_venue", "client_org", "notes"]) record.set(field, record.getString(field).trim());
+    if (record.getString("client_org").length > 120) invalid("client_org", "Keep the organization or company name under 120 characters.");
+    if (record.getString("notes").length > 500) invalid("notes", "Keep the notes under 500 characters.");
+    const sessionId = record.getString("session_type");
+    const session = sessionId
+      ? e.app.findRecordsByFilter("session_types", "id = {:id} && is_active = true", "", 1, 0, { id: sessionId })[0]
+      : null;
+    if (!session) {
+      invalid("session_type", sessionId ? "The selected session type is no longer available." : "Select the type of session.");
+    } else if (session.getBool("on_location")) {
+      if (!record.getString("event_date")) invalid("event_date", "Enter the event date.");
+      if (!record.getString("event_venue")) invalid("event_venue", "Enter the event venue.");
+    } else {
+      record.set("event_date", "");
+      record.set("event_venue", "");
+    }
   }
 
   const packageId = record.getString("package");
+  const pkg = packageId
+    ? e.app.findRecordsByFilter("packages", "id = {:id} && is_active = true", "", 1, 0, { id: packageId })[0]
+    : null;
   if (!packageId) {
     invalid("package", "Please select a Job Order Package to continue.");
-  } else if (!e.app.findRecordsByFilter("packages", "id = {:id} && is_active = true", "", 1, 0, { id: packageId }).length) {
+  } else if (!pkg) {
     invalid("package", "The selected Job Order Package is no longer available. Choose another package.");
+  } else if (![kind, "both"].includes(pkg.getString("client_kind") || "school")) {
+    invalid("package", "This package is not offered for this type of client. Choose another package.");
   }
 
   if (!record.getBool("terms_accepted")) invalid("terms_accepted", "Agree to the Terms & Conditions to proceed.");

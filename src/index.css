@@ -487,7 +487,25 @@ button.bg-obsidian:not(:disabled):hover {
 }
 
 @media screen {
-  .print-only {
+  .print-only,
+  .sf-print-root {
     display: none !important;
+  }
+}
+
+/* Job order / receipt printing: while a sheet is mounted, print only that sheet, edge to edge. */
+@media print {
+  body:has(> .sf-print-root) > :not(.sf-print-root) {
+    display: none !important;
+  }
+
+  body:has(> .sf-print-root) {
+    background-image: none !important;
+  }
+
+  .sf-print-root {
+    display: block !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }

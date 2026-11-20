@@ -93,7 +93,7 @@ export const AdminNavTabs: React.FC<AdminNavTabsProps> = ({ activeTab, onSelectT
         }`}
       >
         <Frame className="w-4 h-4 shrink-0" />
-        <span>Framing Schedule</span>
+        <span>Production &amp; Pickup</span>
       </button>
 
       <button

@@ -2,25 +2,74 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { pb } from '../../db/pocketbase';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
-import type { PaymentRecord, Registration } from '../../types';
+import type { PaymentRecord, RefundRecord, Registration } from '../../types';
+import { studioDayStartUtc } from '../../utils/studioDay';
+import { randomId } from '../../utils/randomId';
+import { clientSummary } from '../../utils/clientInfo';
+import { isReadyForRelease } from '../../utils/releaseReadiness';
+import { ALL_CLIENTS, matchesClientGroup } from '../../utils/clientGroup';
+import {
+  cashierFilterOptions, defaultCashierColumns, emptyCashierFilters, matchesCashierFilters,
+  type CashierColumnId, type CashierFilterKey, type CashierFilters,
+} from './cashierFilters';
 
 export type CollectionMode = 'full' | 'initial' | 'additional';
 const toCentavos = (amount: number) => Math.round(amount * 100);
 const fromCentavos = (amount: number) => amount / 100;
 
 export function canUseCollectionMode(reg: Registration, mode: CollectionMode) {
-  return toCentavos(reg.balance) > 0 && (mode === 'additional' || toCentavos(reg.paid_amount) <= 0);
+  // Full / Downpayment are only for the first payment: anything received before (even if later refunded) means Additional.
+  const received = toCentavos(reg.paid_amount) + toCentavos(reg.refunded_amount ?? 0);
+  return toCentavos(reg.balance) > 0 && (mode === 'additional' || received <= 0);
 }
 
-export type CashierTab = 'pending' | 'paid' | 'balances';
+export type CashierTab = 'pending' | 'paid' | 'balances' | 'ready';
+
+const CASHIER_COLUMNS_KEY = 'studioflow.cashier.visibleColumns';
+function readCashierColumns(): CashierColumnId[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(CASHIER_COLUMNS_KEY) ?? 'null');
+    const valid = Array.isArray(saved) ? defaultCashierColumns.filter((id) => saved.includes(id)) : [];
+    if (valid.length) return valid;
+  } catch {
+    // Storage unavailable: use the default columns.
+  }
+  return defaultCashierColumns;
+}
+
+/** Orders waiting at the counter: ready for release and not yet claimed. */
+export const isWaitingForPickup = (reg: Registration) => reg.status !== 'released' && isReadyForRelease(reg);
 
 export function useCashierState() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [registrations, setRegistrations] = useState<Registration[]>([]);
+  const [collectedTodayCentavos, setCollectedTodayCentavos] = useState(0);
+  const [paymentsToday, setPaymentsToday] = useState(0);
+  const [refundsToday, setRefundsToday] = useState(0);
+  const [refundedTodayCentavos, setRefundedTodayCentavos] = useState(0);
+  const [lastPaymentAt, setLastPaymentAt] = useState('');
+  // The studio day (Manila midnight) the total belongs to; when it changes, the total reloads.
+  const [studioDay, setStudioDay] = useState(studioDayStartUtc);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<CashierTab>('pending');
   const [searchQuery, setSearchQuery] = useState('');
+  // School / walk-in picker next to the search box.
+  const [clientGroup, setClientGroup] = useState(ALL_CLIENTS);
+  // Advanced Filters panel (funnel button) and the columns shown, kept per device.
+  const [filters, setFilters] = useState<CashierFilters>(emptyCashierFilters);
+  const [visibleColumns, setVisibleColumns] = useState<CashierColumnId[]>(readCashierColumns);
+  useEffect(() => {
+    try { localStorage.setItem(CASHIER_COLUMNS_KEY, JSON.stringify(visibleColumns)); } catch { /* optional */ }
+  }, [visibleColumns]);
+  const toggleFilter = (key: CashierFilterKey, id: string) => setFilters((current) => ({
+    ...current,
+    [key]: current[key].includes(id) ? current[key].filter((item) => item !== id) : [...current[key], id],
+  }));
+  const toggleColumn = (id: CashierColumnId) => setVisibleColumns((current) => {
+    if (!current.includes(id)) return [...current, id];
+    return current.length > 1 ? current.filter((item) => item !== id) : current;
+  });
 
   // Payment Processing Modal State
   const [selectedReg, setSelectedReg] = useState<Registration | null>(null);
@@ -29,13 +78,15 @@ export function useCashierState() {
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'gcash' | 'maya' | 'card'>('cash');
   const [cashierName, setCashierName] = useState(user?.name || 'Mel (Cashier)');
   const [remarks, setRemarks] = useState('');
+  const [cashReceived, setCashReceived] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const submittingPayment = useRef(false);
-  const receiptNo = useRef<string | null>(null);
+  // Sent with the payment so a retried request can find the payment the server already saved.
+  const clientKey = useRef<string | null>(null);
 
   // Print Modal State
   const [printReg, setPrintReg] = useState<Registration | null>(null);
-  const [printCopyType, setPrintCopyType] = useState<'customer' | 'owner'>('customer');
+  const [printPaymentId, setPrintPaymentId] = useState<string | undefined>();
 
   // Release Modal State
   const [releaseReg, setReleaseReg] = useState<Registration | null>(null);
@@ -43,12 +94,39 @@ export function useCashierState() {
   const fetchRegistrations = useCallback(async () => {
     try {
       setLoading(true);
-      const records = await pb.collection('registrations').getFullList<Registration>({
-        sort: '-created',
-        expand: 'organization,level,course,package',
-        requestKey: null,
-      });
+      const [records, todaysPayments, todaysRefunds, lastPayment] = await Promise.all([
+        pb.collection('registrations').getFullList<Registration>({
+          sort: '-created',
+          expand: 'organization,level,course,package,session_type',
+          requestKey: null,
+        }),
+        // Only payments received today (studio time) that were not voided or refunded.
+        pb.collection('payments').getFullList<PaymentRecord>({
+          filter: pb.filter("created >= {:start} && (status = 'completed' || status = '')", { start: studioDayStartUtc() }),
+          fields: 'amount',
+          requestKey: null,
+        }),
+        // Refunds given today come off today's total. (Older servers have no refunds: treat as none.)
+        pb.collection('refunds').getFullList<RefundRecord>({
+          filter: pb.filter('created >= {:start}', { start: studioDayStartUtc() }),
+          fields: 'amount',
+          requestKey: null,
+        }).catch(() => [] as RefundRecord[]),
+        // The most recent counted payment, shown under the total (e.g. when today is still ₱0).
+        pb.collection('payments').getList<PaymentRecord>(1, 1, {
+          filter: "status = 'completed' || status = ''",
+          sort: '-created',
+          fields: 'created',
+          requestKey: null,
+        }),
+      ]);
       setRegistrations(records);
+      const refundedToday = todaysRefunds.reduce((sum, refund) => sum + toCentavos(refund.amount), 0);
+      setCollectedTodayCentavos(todaysPayments.reduce((sum, payment) => sum + toCentavos(payment.amount), 0) - refundedToday);
+      setRefundedTodayCentavos(refundedToday);
+      setRefundsToday(todaysRefunds.length);
+      setPaymentsToday(todaysPayments.length);
+      setLastPaymentAt(lastPayment.items[0]?.created ?? '');
     } catch (err) {
       if (err && typeof err === 'object' && 'isAbort' in err && err.isAbort) return;
       console.error('Failed to fetch registrations:', err);
@@ -69,25 +147,53 @@ export function useCashierState() {
     };
   }, [fetchRegistrations]);
 
+  // At Manila midnight "Collected Today" starts over on its own, even if the screen was left open.
+  // A sleeping PC can miss the timer, so the day is also checked when the window gets focus.
+  useEffect(() => {
+    const rollOver = () => {
+      const today = studioDayStartUtc();
+      if (today !== studioDay) {
+        setStudioDay(today);
+        void fetchRegistrations();
+      }
+    };
+    const nextMidnight = Date.parse(studioDay.replace(' ', 'T')) + 86_400_000;
+    const timer = setTimeout(rollOver, Math.max(1_000, nextMidnight - Date.now() + 1_000));
+    window.addEventListener('focus', rollOver);
+    document.addEventListener('visibilitychange', rollOver);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('focus', rollOver);
+      document.removeEventListener('visibilitychange', rollOver);
+    };
+  }, [studioDay, fetchRegistrations]);
+
   const openPaymentModal = useCallback(async (reg: Registration) => {
     if (submittingPayment.current) return;
     try {
-      const [latest, payments] = await Promise.all([
+      const [latest, payments, refunds] = await Promise.all([
         pb.collection('registrations').getOne<Registration>(reg.id, {
-          expand: 'organization,level,course,package', requestKey: null, cache: 'no-store',
+          expand: 'organization,level,course,package,session_type', requestKey: null, cache: 'no-store',
         }),
         pb.collection('payments').getFullList<PaymentRecord>({
           filter: pb.filter('registration = {:registration}', { registration: reg.id }),
           requestKey: null, cache: 'no-store',
         }),
+        pb.collection('refunds').getFullList<RefundRecord>({
+          filter: pb.filter('registration = {:registration}', { registration: reg.id }),
+          requestKey: null, cache: 'no-store',
+        }).catch(() => [] as RefundRecord[]),
       ]);
+      const refundedCentavos = refunds.reduce((sum, refund) => sum + toCentavos(refund.amount), 0);
+      // Net paid: counted payments minus money given back.
       const paidCentavos = payments.reduce((sum, payment) =>
-        (payment.status || 'completed') === 'completed' ? sum + toCentavos(payment.amount) : sum, 0);
+        (payment.status || 'completed') === 'completed' ? sum + toCentavos(payment.amount) : sum, 0) - refundedCentavos;
       const totalCentavos = toCentavos(latest.total_amount || 0);
       const balanceCentavos = Math.max(0, totalCentavos - paidCentavos);
       const hydrated = {
         ...latest,
         paid_amount: fromCentavos(paidCentavos),
+        refunded_amount: fromCentavos(refundedCentavos),
         balance: fromCentavos(balanceCentavos),
       };
       const mode: CollectionMode = !canUseCollectionMode(hydrated, 'full')
@@ -96,11 +202,12 @@ export function useCashierState() {
         ? Math.min(balanceCentavos, Math.round(totalCentavos / 200) * 100)
         : balanceCentavos;
       if (submittingPayment.current) return;
-      receiptNo.current = null;
+      clientKey.current = null;
       setSelectedReg(hydrated);
       setPaymentType(mode);
       setAmountPaid(mode === 'additional' ? '' : String(fromCentavos(paymentCentavos)));
       setRemarks('');
+      setCashReceived('');
     } catch (err) {
       console.error('Failed to load current payment balance:', err);
       toast.error('Could not load the latest payment balance. Please try again.');
@@ -111,9 +218,9 @@ export function useCashierState() {
     if (!submittingPayment.current) setSelectedReg(null);
   }, []);
 
-  const openPrintModal = useCallback((reg: Registration, copyType: 'customer' | 'owner' = 'customer') => {
+  const openPrintModal = useCallback((reg: Registration, paymentId?: string) => {
     setPrintReg(reg);
-    setPrintCopyType(copyType);
+    setPrintPaymentId(paymentId);
   }, []);
 
   const closePrintModal = useCallback(() => {
@@ -159,33 +266,39 @@ export function useCashierState() {
       toast.error('Please enter a valid payment amount.');
       return;
     }
+    const cash = Number(cashReceived);
+    if (paymentMethod === 'cash' && (!/^\d+$/.test(cashReceived) || toCentavos(cash) < amountCentavos)) {
+      toast.error('Enter the cash received. It must cover the payment amount.');
+      return;
+    }
     submittingPayment.current = true;
     setIsProcessing(true);
     try {
-      const receipt = receiptNo.current ??= `REC-${crypto.randomUUID()}`;
+      const key = clientKey.current ??= randomId();
       const payments = pb.collection('payments');
-      await payments.create({
+      const saved = await payments.create<PaymentRecord>({
         registration: selectedReg.id,
         amount: fromCentavos(amountCentavos),
         payment_type: paymentType,
         payment_method: paymentMethod,
         cashier_name: cashierName,
         cashier_id: user?.id || '',
-        cash_tendered: paymentMethod === 'cash' ? fromCentavos(amountCentavos) : 0,
-        change_amount: 0,
-        receipt_no: receipt,
+        cash_tendered: paymentMethod === 'cash' ? fromCentavos(toCentavos(cash)) : 0,
+        client_key: key,
         remarks: remarks.trim(),
       }, { requestKey: null }).catch(async (err: unknown) => {
         // The server may have saved the payment before the response was lost.
-        await payments.getFirstListItem(pb.filter('registration = {:registration} && receipt_no = {:receipt}', {
-          registration: selectedReg.id, receipt,
+        return payments.getFirstListItem<PaymentRecord>(pb.filter('registration = {:registration} && client_key = {:key}', {
+          registration: selectedReg.id, key,
         }), { requestKey: null, cache: 'no-store' }).catch(() => { throw err; });
       });
 
       setSelectedReg(null);
-      toast.success('Payment recorded successfully.');
+      toast.success(saved.change_amount
+        ? `Payment recorded. Change: ₱${saved.change_amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`
+        : 'Payment recorded successfully.');
       const updated = await pb.collection('registrations').getOne<Registration>(selectedReg.id, {
-        expand: 'organization,level,course,package',
+        expand: 'organization,level,course,package,session_type',
         requestKey: null,
         cache: 'no-store',
       }).catch((err: unknown) => {
@@ -202,7 +315,7 @@ export function useCashierState() {
       );
 
       setPrintReg(updated);
-      setPrintCopyType('customer');
+      setPrintPaymentId(saved.id);
 
       // Trigger background sync
       fetchRegistrations();
@@ -216,35 +329,52 @@ export function useCashierState() {
     }
   };
 
+  // Orders matching the school picker and the Advanced Filters; the tabs and their counts use this.
+  const inGroup = useMemo(
+    () => registrations.filter((r) => matchesClientGroup(r, clientGroup) && matchesCashierFilters(r, filters)),
+    [registrations, clientGroup, filters]
+  );
+  const filterOptions = useMemo(() => cashierFilterOptions(registrations), [registrations]);
+
   const pendingCount = useMemo(
-    () => registrations.filter((r) => r.status === 'pending_payment').length,
-    [registrations]
+    () => inGroup.filter((r) => r.status === 'pending_payment').length,
+    [inGroup]
   );
 
   const paidCount = useMemo(
-    () =>
-      registrations.filter(
-        (r) => r.status !== 'pending_payment' && r.status !== 'cancelled'
-      ).length,
-    [registrations]
+    () => inGroup.filter((r) => r.status !== 'pending_payment' && r.status !== 'cancelled').length,
+    [inGroup]
   );
 
   const balanceCount = useMemo(
-    () => registrations.filter((r) => r.balance > 0).length,
-    [registrations]
+    // Cancelled orders owe nothing, so they are not in Balances.
+    () => inGroup.filter((r) => r.balance > 0 && r.status !== 'cancelled').length,
+    [inGroup]
   );
 
-  const totalCollectedToday = useMemo(
-    () => registrations.reduce((s, r) => s + (r.paid_amount || 0), 0),
-    [registrations]
-  );
+  const readyCount = useMemo(() => inGroup.filter(isWaitingForPickup).length, [inGroup]);
+
+  // Pickup notice: the modal shows the text message; "Mark as notified" records it on the server.
+  const [notifyReg, setNotifyReg] = useState<Registration | null>(null);
+  const markNotified = async (reg: Registration) => {
+    try {
+      await pb.send(`/api/studioflow/pickup-notified/${reg.id}`, { method: 'POST' });
+      toast.success(`JO ${reg.job_order_no} marked as notified.`);
+      setNotifyReg(null);
+      fetchRegistrations();
+    } catch (err) {
+      toast.error('Could not record the notice: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    }
+  };
+
+  const totalCollectedToday = fromCentavos(collectedTodayCentavos);
 
   const filteredRegistrations = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    return registrations.filter((r) => {
+    return inGroup.filter((r) => {
       const fullName = `${r.given_name} ${r.family_name}`.toLowerCase();
       const jobNo = (r.job_order_no || '').toLowerCase();
-      const school = (r.expand?.organization?.name || '').toLowerCase();
+      const school = clientSummary(r, true).toLowerCase();
       const matchesSearch = !q || fullName.includes(q) || jobNo.includes(q) || school.includes(q);
 
       if (!matchesSearch) return false;
@@ -256,11 +386,14 @@ export function useCashierState() {
         return r.status !== 'pending_payment' && r.status !== 'cancelled';
       }
       if (activeTab === 'balances') {
-        return r.balance > 0;
+        return r.balance > 0 && r.status !== 'cancelled';
+      }
+      if (activeTab === 'ready') {
+        return isWaitingForPickup(r);
       }
       return true;
     });
-  }, [registrations, searchQuery, activeTab]);
+  }, [inGroup, searchQuery, activeTab]);
 
   return {
     registrations,
@@ -270,10 +403,28 @@ export function useCashierState() {
     setActiveTab,
     searchQuery,
     setSearchQuery,
+    clientGroup,
+    setClientGroup,
+    filters,
+    filterOptions,
+    toggleFilter,
+    clearFilters: () => setFilters(emptyCashierFilters),
+    visibleColumns,
+    toggleColumn,
+    resetColumns: () => setVisibleColumns(defaultCashierColumns),
     pendingCount,
     paidCount,
     balanceCount,
+    readyCount,
+    notifyReg,
+    openNotifyModal: setNotifyReg,
+    closeNotifyModal: () => setNotifyReg(null),
+    markNotified,
     totalCollectedToday,
+    paymentsToday,
+    refundsToday,
+    refundedToday: fromCentavos(refundedTodayCentavos),
+    lastPaymentAt,
     fetchRegistrations,
     // Payment Modal
     selectedReg,
@@ -289,12 +440,13 @@ export function useCashierState() {
     setCashierName,
     remarks,
     setRemarks,
+    cashReceived,
+    setCashReceived,
     isProcessing,
     handleConfirmPayment,
     // Print Modal
     printReg,
-    printCopyType,
-    setPrintCopyType,
+    printPaymentId,
     openPrintModal,
     closePrintModal,
     // Release Modal

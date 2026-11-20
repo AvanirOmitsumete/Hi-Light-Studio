@@ -4,6 +4,9 @@ import { usePhotographerQueue } from './usePhotographerQueue';
 import { PhotographerHeader } from './components/PhotographerHeader';
 import { PhotographerQueueCard } from './components/PhotographerQueueCard';
 import { PhotographerHistoryList } from './components/PhotographerHistoryList';
+import { CameraImportPanel } from './components/CameraImportPanel';
+import { useCameraLink } from './useCameraLink';
+import type { Registration } from '../../types';
 
 export const PhotographerPage: React.FC = () => {
   const {
@@ -17,6 +20,18 @@ export const PhotographerPage: React.FC = () => {
     handleCallStudent,
     handleMarkDone,
   } = usePhotographerQueue();
+  const camera = useCameraLink();
+  const linkedId = camera.camera?.client?.id ?? '';
+
+  // Calling a client points this device's camera at them; finishing the shoot
+  // sends the last shots and releases the camera for the next client.
+  const callStudent = async (reg: Registration) => {
+    if (await handleCallStudent(reg) && camera.camera?.enabled) await camera.linkClient(reg.id);
+  };
+  const markDone = async (reg: Registration) => {
+    if (linkedId === reg.id) await camera.unlinkClient(reg.id);
+    await handleMarkDone(reg);
+  };
 
   return (
     <div className="w-full max-w-[1680px] mx-auto px-4 sm:px-6 lg:px-8 xl:px-12 py-6 sm:py-8">
@@ -70,6 +85,8 @@ export const PhotographerPage: React.FC = () => {
         </button>
       </div>
 
+      {activeTab === 'queue' && <CameraImportPanel link={camera} />}
+
       {/* QUEUE CARDS GRID */}
       {activeTab === 'queue' && (
         <div className="animate-enter-delay-1">
@@ -98,8 +115,11 @@ export const PhotographerPage: React.FC = () => {
                   registration={reg}
                   index={idx}
                   isShooting={reg.id === currentlyShootingId || reg.status === 'shooting'}
-                  onCallStudent={handleCallStudent}
-                  onMarkDone={handleMarkDone}
+                  onCallStudent={callStudent}
+                  onMarkDone={markDone}
+                  cameraName={camera.camera?.enabled ? camera.camera.name : ''}
+                  cameraLinked={linkedId === reg.id}
+                  onLinkCamera={camera.linkClient}
                 />
               ))}
             </div>
