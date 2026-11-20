@@ -5,6 +5,7 @@ import { useToast } from '../../context/ToastContext';
 import type { PaymentRecord, RefundRecord, Registration } from '../../types';
 import { studioDayStartUtc } from '../../utils/studioDay';
 import { randomId } from '../../utils/randomId';
+import { refreshClientDocuments } from '../receipts/clientDocuments';
 import { clientSummary } from '../../utils/clientInfo';
 import { isReadyForRelease } from '../../utils/releaseReadiness';
 import { ALL_CLIENTS, matchesClientGroup } from '../../utils/clientGroup';
@@ -294,6 +295,7 @@ export function useCashierState() {
       });
 
       setSelectedReg(null);
+      refreshClientDocuments(selectedReg.id, toast.warning);
       toast.success(saved.change_amount
         ? `Payment recorded. Change: ₱${saved.change_amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`
         : 'Payment recorded successfully.');

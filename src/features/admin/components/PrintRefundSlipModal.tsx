@@ -8,6 +8,7 @@ import { formatJobOrderNo } from '../../../utils/formatters';
 import { SignaturePad } from '../../../components/SignaturePad';
 import { StripPage } from '../../receipts/PaymentReceiptSheet';
 import { RefundSlipSheet } from '../../receipts/RefundSlipSheet';
+import { refreshClientDocuments } from '../../receipts/clientDocuments';
 import {
   loadRefundSignature, loadRefundSlipData, receiptDate, refundAcknowledgment, savedReceiptPaper, saveReceiptPaper, stripPaper,
   type ReceiptPaper, type RefundSlipData,
@@ -70,6 +71,7 @@ export const PrintRefundSlipModal: React.FC<PrintRefundSlipModalProps> = ({ regi
       setSignature(drawn.dataUrl);
       setDrawn(null);
       toast.success(`Client signature saved on ${saved.refund_no}.`);
+      refreshClientDocuments(registration.id, toast.warning);
     } catch (err) {
       console.error('Failed to save the refund signature:', err);
       const message = (err as { response?: { message?: string } })?.response?.message;

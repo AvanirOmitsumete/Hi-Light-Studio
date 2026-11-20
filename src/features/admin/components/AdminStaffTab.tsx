@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { UserPlus, Trash2 } from 'lucide-react';
+import { UserPlus, Trash2, Eye, EyeOff, KeyRound } from 'lucide-react';
+import { ResetPasswordModal } from './ResetPasswordModal';
 import type { StaffUser, StaffRole } from '../../../types';
 import { PROTECTED_SYSTEM_USERNAMES } from '../../../constants/studio';
 import { ConfirmModal } from '../../../components/common/ConfirmModal';
@@ -22,6 +23,7 @@ interface AdminStaffTabProps {
   onCreateStaff: (e: React.FormEvent) => void;
   onDeleteStaff: (id: string, username: string) => void;
   onUpdateStaff: (id: string, changes: Partial<Pick<StaffUser, 'role' | 'disabled'>>) => Promise<void>;
+  onResetStaffPassword: (id: string, username: string, password: string) => Promise<void>;
 }
 
 export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
@@ -37,9 +39,12 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
   onCreateStaff,
   onDeleteStaff,
   onUpdateStaff,
+  onResetStaffPassword,
 }) => {
   const { user } = useAuth();
   const [updating, setUpdating] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [resetTarget, setResetTarget] = useState<StaffUser | null>(null);
 
   async function update(account: StaffUser, changes: Partial<Pick<StaffUser, 'role' | 'disabled'>>) {
     setUpdating(account.id);
@@ -97,6 +102,9 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
                 type="text"
                 required
                 minLength={3}
+                autoComplete="off"
+                spellCheck={false}
+                autoCapitalize="off"
                 placeholder="cashier2"
                 value={staffUsername}
                 onChange={(e) => onStaffUsernameChange(e.target.value)}
@@ -135,15 +143,34 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
             <label className="block text-[11px] font-black text-ink uppercase tracking-wider mb-1.5">
               Password (Min 8 characters) <span className="text-red-600">*</span>
             </label>
-            <input
-              type="password"
-              required
-              minLength={8}
-              placeholder="••••••••••••"
-              value={staffPassword}
-              onChange={(e) => onStaffPasswordChange(e.target.value)}
-              className="w-full min-h-[44px] text-xs sm:text-sm px-3.5 py-2 border border-neutral-400 bg-canvas focus:bg-panel font-mono"
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                required
+                minLength={8}
+                maxLength={71}
+                autoComplete="new-password"
+                spellCheck={false}
+                autoCapitalize="off"
+                placeholder="••••••••••••"
+                value={staffPassword}
+                onChange={(e) => onStaffPasswordChange(e.target.value)}
+                className="w-full min-h-[44px] text-xs sm:text-sm pl-3.5 pr-12 py-2 border border-neutral-400 bg-canvas focus:bg-panel font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                aria-pressed={showPassword}
+                title={showPassword ? 'Hide password' : 'Show password'}
+                className="absolute inset-y-0 right-0 w-11 flex items-center justify-center text-neutral-500 hover:text-gold cursor-pointer"
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            {staffPassword.length > 0 && staffPassword.length < 8 && (
+              <p className="text-[11px] text-red-600 mt-1">{8 - staffPassword.length} more character(s) needed.</p>
+            )}
           </div>
 
           <button
@@ -195,6 +222,15 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
                   className="border border-neutral-600 text-xs p-2 disabled:opacity-45">
                   {acc.disabled ? 'Enable' : 'Disable'}
                 </button>
+                {acc.id !== user?.id && (
+                  <button type="button" disabled={!!updating}
+                    onClick={() => setResetTarget(acc)}
+                    title={`Reset password for @${acc.username}`}
+                    className="flex items-center gap-1 border border-neutral-600 text-xs p-2 hover:border-gold hover:text-gold cursor-pointer disabled:opacity-45">
+                    <KeyRound className="w-3.5 h-3.5" />
+                    Reset Password
+                  </button>
+                )}
               {acc.id !== user?.id && !PROTECTED_SYSTEM_USERNAMES.includes(acc.username) && (
                 <button
                   type="button"
@@ -210,6 +246,14 @@ export const AdminStaffTab: React.FC<AdminStaffTabProps> = ({
           ))}
         </div>
       </div>
+
+      {resetTarget && (
+        <ResetPasswordModal
+          username={resetTarget.username}
+          onSubmit={(password) => onResetStaffPassword(resetTarget.id, resetTarget.username, password)}
+          onClose={() => setResetTarget(null)}
+        />
+      )}
 
       {/* Confirmation Modal */}
       <ConfirmModal

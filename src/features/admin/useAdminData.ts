@@ -10,6 +10,7 @@ import type {
 import { parseRosterCsv, exportRegistrationsToCsv } from '../../utils/csv';
 import { PROTECTED_SYSTEM_USERNAMES } from '../../constants/studio';
 import { overviewMetrics } from './overviewMetrics';
+import { refreshClientDocuments } from '../receipts/clientDocuments';
 import type { DateRange, OverallScope, StudentExcelData } from './studentExcel';
 import type { RegistrationEdits } from './components/EditStudentModal';
 
@@ -223,7 +224,7 @@ export function useAdminData() {
     const cleanUsername = staffUsername.trim().toLowerCase().replace(/[^a-z0-9._]/g, '');
 
     if (!cleanUsername || cleanUsername.length < 3) {
-      toast.error('Username must be at least 3 characters and contain only letters, numbers, or dots.');
+      toast.error('Username must be at least 3 characters and contain only letters, numbers, dots, or underscores.');
       return;
     }
 
@@ -281,6 +282,25 @@ export function useAdminData() {
       toast.success('Staff account updated.');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to update staff account.');
+    }
+  };
+
+  // Throws on failure so the reset dialog stays open for another try.
+  const handleResetStaffPassword = async (id: string, username: string, password: string) => {
+    if (password.length < 8) {
+      toast.error('Password must be at least 8 characters long.');
+      throw new Error('Password too short');
+    }
+    try {
+      // Admins hold the users manageRule, so no oldPassword is needed. PocketBase
+      // rotates the account's tokenKey, which signs that user out everywhere.
+      await pb.collection('users').update(id, { password, passwordConfirm: password });
+      toast.success(`Password reset for @${username}. They must log in again.`);
+    } catch (error) {
+      const data = (error as { response?: { data?: Record<string, { message?: string }> } })?.response?.data;
+      const detail = data && Object.values(data).map((field) => field?.message).filter(Boolean).join('; ');
+      toast.error(detail || (error instanceof Error ? error.message : 'Failed to reset password.'));
+      throw error;
     }
   };
 
@@ -537,8 +557,12 @@ export function useAdminData() {
   };
 
   // --- Student Registration Mutations (T028) ---
+  // After each change below, the PDF copies in the client's folder (RECEIPTS\) are redrawn in the background.
+  const refreshDocuments = (registrationId: string) => refreshClientDocuments(registrationId, toast.warning);
+
   const handleUpdateRegistration = async (id: string, data: RegistrationEdits) => {
     await pb.collection('registrations').update(id, data);
+    refreshDocuments(id);
     loadAllData();
   };
 
@@ -547,18 +571,22 @@ export function useAdminData() {
   // Voids, refunds, cancellations and restores go through server routes that record who, when and why.
   const handleCancelRegistration = async (id: string, reason: string) => {
     await pb.send(`/api/studioflow/registrations/${id}/cancel`, { method: 'POST', body: { reason } });
+    refreshDocuments(id);
     await loadAllData();
   };
   const handleRestoreRegistration = async (id: string) => {
     await pb.send(`/api/studioflow/registrations/${id}/restore`, { method: 'POST' });
+    refreshDocuments(id);
     await loadAllData();
   };
   const handleVoidPayment = async (paymentId: string, reason: string) => {
-    await pb.send(`/api/studioflow/payments/${paymentId}/void`, { method: 'POST', body: { reason } });
+    const voided = await pb.send<PaymentRecord>(`/api/studioflow/payments/${paymentId}/void`, { method: 'POST', body: { reason } });
+    refreshDocuments(voided.registration);
     await loadAllData();
   };
   const handleRefund = async (refund: RefundRequest) => {
     const saved = await pb.send<RefundRecord>('/api/studioflow/refunds', { method: 'POST', body: refund });
+    refreshDocuments(saved.registration);
     await loadAllData();
     return saved;
   };
@@ -651,6 +679,7 @@ export function useAdminData() {
     handleCreateStaff,
     handleDeleteStaff,
     handleUpdateStaff,
+    handleResetStaffPassword,
     handleSetProductionStatus,
     handleUpdatePhotoStatus,
     // School & Course Mutations

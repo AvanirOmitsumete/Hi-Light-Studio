@@ -172,6 +172,7 @@ export const AdminPage: React.FC = () => {
               onCreateStaff={admin.handleCreateStaff}
               onDeleteStaff={admin.handleDeleteStaff}
               onUpdateStaff={admin.handleUpdateStaff}
+              onResetStaffPassword={admin.handleResetStaffPassword}
             />
           )}
         </main>

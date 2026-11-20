@@ -1,6 +1,7 @@
 import type { jsPDF } from 'jspdf';
 import type { PaymentRecord, RefundRecord, Registration } from '../../types';
 import { STUDIO_INFO } from '../../constants/studio';
+import { pb } from '../../db/pocketbase';
 import { formatJobOrderNo, formatQueueNumber } from '../../utils/formatters';
 import { getRegistrationAddOns } from '../../utils/registrationAddOns';
 import {
@@ -129,14 +130,17 @@ function drawJobOrderHalf(doc: jsPDF, data: ReceiptData, copy: 'customer' | 'stu
   const rowH = 0.27;
   const pkg = reg.expand?.package;
   const addOns = getRegistrationAddOns(reg.add_ons);
-  const extras = [...addOns.map((item) => `${item.name} ${php(item.amount)}`), ...(reg.other_fees ? [`Other fees ${php(reg.other_fees)}`] : [])];
+  // Add-ons, then other fees: listed one per line below the client grid (the client shows them at each station).
+  const extras: Array<[string, number]> = [
+    ...addOns.map((item): [string, number] => [item.name, item.amount]),
+    ...(reg.other_fees ? [['Other fees', reg.other_fees] as [string, number]] : []),
+  ];
   const cells: Array<[string, string, number, boolean?]> = [
     ['CLIENT NAME', `${reg.family_name}, ${reg.given_name}${reg.middle_name ? ' ' + reg.middle_name : ''}`.toUpperCase(), 2, true],
     ['MOBILE', reg.mobile_number || '—', 1],
     ['EMAIL', reg.email || '—', 1],
     ...profileCells(reg).map(([label, value, span]): [string, string, number] => [label.toUpperCase(), value, span]),
-    ['PACKAGE', pkg ? `${pkg.code} · ${pkg.name} — ${php(soldPackagePrice(reg))}` : '—', 2],
-    ['ADD-ONS / OTHER FEES', extras.length ? extras.join(' · ') : 'None', 2],
+    ['PACKAGE', pkg ? `${pkg.code} · ${pkg.name} — ${php(soldPackagePrice(reg))}` : '—', 4],
   ];
   let cx = x;
   let cy = y;
@@ -148,7 +152,25 @@ function drawJobOrderHalf(doc: jsPDF, data: ReceiptData, copy: 'customer' | 'stu
     cx += cw;
     if (cx >= right - 0.001) { cx = x; cy += rowH; }
   }
-  y = cy + 0.07;
+  // Add-ons: numbered, two columns, name and price on every line (never cut off mid-list).
+  const lineH = 0.13;
+  const addOnRows = Math.max(1, Math.ceil(extras.length / 2));
+  const addOnsH = 0.12 + addOnRows * lineH;
+  box(doc, x, cy, w, addOnsH);
+  put(doc, `ADD-ONS${extras.length ? ` (${extras.length})` : ''}`, x + 0.06, cy + 0.09, { size: 5, bold: true, mono: true, color: GREY });
+  if (!extras.length) put(doc, 'None', x + 0.06, cy + 0.2, { size: 8.5, bold: true });
+  const columnW = (w - 0.12 - 0.2) / 2;
+  extras.forEach(([label, amount], index) => {
+    const colX = x + 0.06 + (index % 2) * (columnW + 0.2);
+    const lineY = cy + 0.2 + Math.floor(index / 2) * lineH;
+    const price = php(amount);
+    doc.setFont('courier', 'bold');
+    doc.setFontSize(8);
+    const priceW = doc.getTextWidth(price);
+    put(doc, `${index + 1}. ${label}`, colX, lineY, { size: 8, bold: true, width: columnW - priceW - 0.1 });
+    put(doc, price, colX + columnW, lineY, { size: 8, bold: true, mono: true, align: 'right' });
+  });
+  y = cy + addOnsH + 0.07;
 
   // Payment table
   const totalsW = 2.05;
@@ -470,6 +492,12 @@ async function newDoc(format: [number, number]) {
  * With `withRefundSlips`, every refund slip follows on letter pages, 3 strips per page, with saved signatures.
  */
 export async function downloadJobOrderPdf(data: ReceiptData, cashierName: string, withRefundSlips = false) {
+  const doc = await buildJobOrderPdf(data, cashierName, withRefundSlips);
+  const suffix = withRefundSlips && data.refunds.length ? '_with_refund_slips' : '';
+  doc.save(`JobOrder_${data.registration.job_order_no || data.registration.id}${suffix}.pdf`);
+}
+
+async function buildJobOrderPdf(data: ReceiptData, cashierName: string, withRefundSlips = false) {
   const doc = await newDoc([8.5, 11]);
   const signature = await imageData(data.registration);
   drawJobOrderHalf(doc, data, 'customer', 0, cashierName, signature);
@@ -487,12 +515,16 @@ export async function downloadJobOrderPdf(data: ReceiptData, cashierName: string
     drawRefundSlip(doc, data, refund, 'studio', 4.25, signatures[index], top);
     if (slot < 2 && index < slips.length - 1) rule(doc, 0.2, top + RECEIPT_HEIGHT_IN, 8.3, top + RECEIPT_HEIGHT_IN, 0.6, true);
   });
-  const suffix = slips.length ? '_with_refund_slips' : '';
-  doc.save(`JobOrder_${data.registration.job_order_no || data.registration.id}${suffix}.pdf`);
+  return doc;
 }
 
 /** Receipt strip (8.5 × 4.25 in): customer copy (left) and studio copy (right), on a letter sheet or a leftover piece. */
 export async function downloadReceiptPdf(data: ReceiptData, payment: PaymentRecord, paper: ReceiptPaper = 'letter') {
+  const doc = await buildReceiptPdf(data, payment, paper);
+  doc.save(`Receipt_${receiptLabel(payment)}_JO${data.registration.job_order_no || data.registration.id}.pdf`);
+}
+
+async function buildReceiptPdf(data: ReceiptData, payment: PaymentRecord, paper: ReceiptPaper) {
   const doc = await newDoc(paper === 'letter' ? [8.5, 11] : [8.5, 5.5]);
   drawReceiptSlip(doc, data, payment, 'customer', 0);
   rule(doc, 4.25, 0.15, 4.25, RECEIPT_HEIGHT_IN - 0.1, 0.6, true);
@@ -502,11 +534,16 @@ export async function downloadReceiptPdf(data: ReceiptData, payment: PaymentReco
     rule(doc, 0.2, RECEIPT_HEIGHT_IN, 8.3, RECEIPT_HEIGHT_IN, 0.6, true);
     put(doc, '- - cut here: keep the rest of the sheet for the next receipts - -', 4.25, RECEIPT_HEIGHT_IN - 0.03, { size: 5.5, mono: true, color: [140, 140, 140], align: 'center' });
   }
-  doc.save(`Receipt_${receiptLabel(payment)}_JO${data.registration.job_order_no || data.registration.id}.pdf`);
+  return doc;
 }
 
 /** Refund slip strip: customer copy (left) and studio copy for the client to sign (right). */
 export async function downloadRefundSlipPdf(data: RefundSlipData, refund: RefundRecord, paper: ReceiptPaper = 'letter', signature: string | null = null) {
+  const doc = await buildRefundSlipPdf(data, refund, paper, signature);
+  doc.save(`RefundSlip_${refund.refund_no}_JO${data.registration.job_order_no || data.registration.id}.pdf`);
+}
+
+async function buildRefundSlipPdf(data: RefundSlipData, refund: RefundRecord, paper: ReceiptPaper, signature: string | null) {
   const doc = await newDoc(paper === 'letter' ? [8.5, 11] : [8.5, 5.5]);
   drawRefundSlip(doc, data, refund, 'customer', 0, null);
   rule(doc, 4.25, 0.15, 4.25, RECEIPT_HEIGHT_IN - 0.1, 0.6, true);
@@ -515,10 +552,42 @@ export async function downloadRefundSlipPdf(data: RefundSlipData, refund: Refund
     rule(doc, 0.2, RECEIPT_HEIGHT_IN, 8.3, RECEIPT_HEIGHT_IN, 0.6, true);
     put(doc, '- - cut here: keep the rest of the sheet for the next receipts - -', 4.25, RECEIPT_HEIGHT_IN - 0.03, { size: 5.5, mono: true, color: [140, 140, 140], align: 'center' });
   }
-  doc.save(`RefundSlip_${refund.refund_no}_JO${data.registration.job_order_no || data.registration.id}.pdf`);
+  return doc;
 }
 
 /** Admin directory shortcut: the job order sheet, followed by its refund slips when money was given back. */
 export async function downloadJobOrderPdfFor(registration: Registration, cashierName = 'Cashier Staff') {
   await downloadJobOrderPdf(await loadReceiptData(registration.id), cashierName, true);
+}
+
+/**
+ * Saves PDF copies of a job order's paperwork into the client's folder (<folder>\RECEIPTS on the
+ * photo drive): JO-<no>.pdf, one OR-….pdf per payment and one RF-….pdf per refund, all redrawn
+ * from the current records (voided receipts and cancel / refund stamps included).
+ * Returns false when there is nothing to save yet (no payment, so no client folder).
+ * The database stays the official record; these copies are for staff browsing the drive.
+ */
+export async function saveClientDocuments(registrationId: string): Promise<boolean> {
+  const data = await loadReceiptData(registrationId);
+  const reg = data.registration;
+  if (!data.payments.length) return false;
+  const files: Array<[name: string, doc: jsPDF]> = [
+    [`JO-${reg.job_order_no}.pdf`, await buildJobOrderPdf(data, reg.prepared_by || 'Cashier Staff')],
+  ];
+  for (const payment of data.payments) {
+    if (payment.receipt_no) files.push([`${payment.receipt_no}.pdf`, await buildReceiptPdf(data, payment, 'half')]);
+  }
+  for (const refund of data.refunds) {
+    if (refund.refund_no) files.push([`${refund.refund_no}.pdf`, await buildRefundSlipPdf(data, refund, 'half', await loadRefundSignature(refund))]);
+  }
+  const form = new FormData();
+  for (const [name, doc] of files) form.append('files', doc.output('blob'), name);
+  try {
+    await pb.send(`/api/studioflow/registrations/${registrationId}/documents`, { method: 'POST', body: form, requestKey: null });
+  } catch (error) {
+    // 409: no folder yet (a job order paid before folders were made at payment always has one).
+    if ((error as { status?: number })?.status === 409) return false;
+    throw error;
+  }
+  return true;
 }

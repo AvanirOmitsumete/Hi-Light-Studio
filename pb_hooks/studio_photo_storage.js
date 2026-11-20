@@ -45,6 +45,45 @@ function setFolder(record, path) {
   record.set("photo_folder_key", path.toLowerCase());
 }
 
+// Names the client's folder at the first payment: <school>/<course>/<job no>_<Last>_<First>.
+// Job order numbers are unique, so the name is too. photoFolder() also finds the folder of a
+// job order from before folder names were saved (either legacy spelling, if it holds photos).
+// The record ID is added only as a last resort: a duplicate job order number from the old
+// numbering, or a path another job order already owns. A payment is never refused over this.
+function assignFolder(app, registration) {
+  if (registration.getString("photo_folder")) return;
+  let path;
+  try { path = photoFolder(app, registration); } catch (_) { path = pathFor(app, registration) + "_" + registration.id; }
+  setFolder(registration, path);
+}
+
+const documentsDir = "RECEIPTS";
+
+// Saves one PDF copy (job order, receipt or refund slip) into <client folder>/RECEIPTS/,
+// replacing an older copy of the same document. Written to a temporary name first, so a
+// failed upload never leaves half a file under the real name.
+function saveDocument(relative, name, bytes) {
+  if (!/^(?:JO-\d+|OR-\d+|RF-\d+)\.pdf$/.test(name)) throw new BadRequestError("Invalid document name.");
+  provision(relative);
+  const root = openStudent(relative);
+  if (!root) throw new Error("The client folder could not be opened.");
+  try {
+    root.mkdirAll(documentsDir, 0o750);
+    const target = documentsDir + "/" + name;
+    const partial = target + ".studioflow-partial";
+    // O_WRONLY | O_CREATE | O_TRUNC
+    const output = root.openFile(partial, 0x1 | 0x40 | 0x200, 0o640);
+    try {
+      output.write(bytes);
+      output.sync();
+    } finally { output.close(); }
+    if (statEntry(root, target)) root.remove(target);
+    root.rename(partial, target);
+  } finally {
+    root.close();
+  }
+}
+
 function photoFolder(app, registration) {
   const saved = registration.getString("photo_folder");
   if (saved) return saved;
@@ -186,4 +225,7 @@ function displayPath(relative) {
   return $filepath.join(basePath(), ...relative.split("/"));
 }
 
-module.exports = { basePath, displayPath, formats, image, inventory, openStudent, pathFor, photoFolder, photoMime, provision, setFolder, statEntry, usableName };
+module.exports = {
+  assignFolder, basePath, displayPath, documentsDir, formats, image, inventory, openStudent, pathFor, photoFolder,
+  photoMime, provision, saveDocument, setFolder, statEntry, usableName,
+};

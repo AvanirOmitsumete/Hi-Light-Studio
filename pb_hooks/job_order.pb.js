@@ -1,86 +1,49 @@
 /// <reference path="../pb_data/types.d.ts" />
 
 /**
- * PocketBase Hook: Auto-generate Job Order Numbers, daily FCFS Queue numbers,
- * and automatically generate deterministic C:\StudioFlow_Photos
- * directories (T042 / AC021) on registration and payment creation.
+ * PocketBase Hook: job order numbers, daily FCFS queue numbers, and the client's
+ * photo folder (created at the first payment, see the payments hook below).
  * Compatible with PocketBase v0.23+ / 0.41.x hook middleware pattern (e.next()).
  */
 
 onRecordCreate((e) => {
-  // 1. Auto-generate sequential 5-digit Job Order Number if not provided
-  if (!e.record.get("job_order_no")) {
+  const app = e.app;
+  // Numbers are read and the row inserted in one transaction. PocketBase runs one write
+  // transaction at a time, so two kiosks registering together can't get the same number.
+  app.runInTransaction((tx) => {
+    e.app = tx;
     try {
-      const records = e.app.findRecordsByFilter(
-        "registrations",
-        "job_order_no != ''",
-        "-job_order_no",
-        1,
-        0
-      );
-      let nextNum = 1; // Base starting number starting at 00001
-      if (records.length > 0) {
-        const lastNo = records[0].getString("job_order_no");
-        const parsed = parseInt(lastNo, 10);
-        if (!isNaN(parsed) && parsed >= nextNum) {
-          nextNum = parsed + 1;
-        }
+      // 1. Sequential 5-digit job order number (numeric max, so 99999 -> 100000 still sorts right).
+      if (!e.record.getString("job_order_no")) {
+        const last = new DynamicModel({ n: 0 });
+        tx.db().newQuery(
+          "SELECT COALESCE(MAX(CAST(job_order_no AS INTEGER)), 0) AS n FROM registrations WHERE job_order_no GLOB '[0-9]*'"
+        ).one(last);
+        e.record.set("job_order_no", String(last.n + 1).padStart(5, "0"));
       }
-      e.record.set("job_order_no", String(nextNum).padStart(5, "0"));
-    } catch (_) {
-      e.record.set("job_order_no", String(Date.now()).slice(-5));
+
+      // 2. Daily FCFS queue number.
+      if (!e.record.getInt("queue_number")) {
+        // The queue restarts at midnight studio time (Asia/Manila, UTC+8), not midnight UTC.
+        // `created` is stored in UTC, so compare against Manila midnight expressed in UTC.
+        const offset = 8 * 3600000;
+        const manilaDay = new Date(Date.now() + offset).toISOString().slice(0, 10);
+        const dayStart = new Date(Date.parse(manilaDay + "T00:00:00Z") - offset).toISOString().replace("T", " ");
+        const records = tx.findRecordsByFilter("registrations", "created >= {:dayStart}", "-queue_number", 1, 0, { dayStart });
+        e.record.set("queue_number", records.length && records[0].getInt("queue_number") > 0 ? records[0].getInt("queue_number") + 1 : 1);
+      }
+
+      // 3. Default statuses.
+      if (!e.record.getString("status")) e.record.set("status", "pending_payment");
+      if (!e.record.getString("payment_status")) e.record.set("payment_status", "unpaid");
+
+      // No photo folder yet: it is named and created at the first payment, so unpaid kiosk
+      // registrations leave no empty folders and a name corrected before payment is used.
+      e.next();
+    } finally {
+      e.app = app;
     }
-  }
-
-  // 2. Assign daily FCFS Queue Number
-  if (!e.record.getInt("queue_number")) {
-    try {
-      // The queue restarts at midnight studio time (Asia/Manila, UTC+8), not midnight UTC.
-      // `created` is stored in UTC, so compare against Manila midnight expressed in UTC.
-      const offset = 8 * 3600000;
-      const manilaDay = new Date(Date.now() + offset).toISOString().slice(0, 10);
-      const dayStart = new Date(Date.parse(manilaDay + "T00:00:00Z") - offset).toISOString().replace("T", " ");
-      const records = e.app.findRecordsByFilter(
-        "registrations",
-        "created >= {:dayStart}",
-        "-queue_number",
-        1,
-        0,
-        { dayStart }
-      );
-      const nextQueue =
-        records.length > 0 && records[0].getInt("queue_number") > 0
-          ? records[0].getInt("queue_number") + 1
-          : 1;
-      e.record.set("queue_number", nextQueue);
-    } catch (_) {
-      e.record.set("queue_number", 1);
-    }
-  }
-
-  // 3. Set default statuses
-  if (!e.record.getString("status")) {
-    e.record.set("status", "pending_payment");
-  }
-  if (!e.record.getString("payment_status")) {
-    e.record.set("payment_status", "unpaid");
-  }
-
-  const storage = require(__hooks + "/studio_photo_storage.js");
-  storage.setFolder(e.record, storage.pathFor(e.app, e.record) + "_" + (e.record.id || $security.randomString(15)));
-
-  // Must call e.next() to proceed with the DB INSERT
-  return e.next();
-}, "registrations");
-
-onRecordAfterCreateSuccess((e) => {
-  e.next();
-  try {
-    const storage = require(__hooks + "/studio_photo_storage.js");
-    storage.provision(e.record.getString("photo_folder"));
-  } catch (error) {
-    console.log("Pictorial directory creation notice:", error);
-  }
+  });
 }, "registrations");
 
 onRecordCreate((e) => {
@@ -157,13 +120,15 @@ onRecordCreate((e) => {
       if (totals.net > 0 && reg.getString("status") === "pending_payment") reg.set("status", "paid");
       const cashier = e.record.getString("cashier_name");
       if (status === "completed" && cashier && !reg.getString("prepared_by")) reg.set("prepared_by", cashier);
+      // First payment: the client's photo folder is named now (<job no>_<Last>_<First>).
+      require(__hooks + "/studio_photo_storage.js").assignFolder(tx, reg);
       tx.save(reg);
     } finally {
       e.app = app;
     }
   });
 
-  // Retry directory provisioning after payment if storage was offline during registration.
+  // Create the folder on disk (also retried on later payments if the photo drive was offline).
   try {
     const storage = require(__hooks + "/studio_photo_storage.js");
     const path = reg.getString("photo_folder");

@@ -33,6 +33,11 @@ const JobOrderHalf: React.FC<{ data: ReceiptData; cashierName: string; copy: 'cu
   const isCustomer = copy === 'customer';
   const pkg = reg.expand?.package;
   const addOns = getRegistrationAddOns(reg.add_ons);
+  // Add-ons, then other fees, as [label, amount] lines.
+  const extras: Array<[string, number]> = [
+    ...addOns.map((item): [string, number] => [item.name, item.amount]),
+    ...(reg.other_fees ? [['Other fees', reg.other_fees] as [string, number]] : []),
+  ];
   const { rows, hidden } = visiblePayments(payments, MAX_ROWS);
   const latest = [...payments].reverse().find(isCounted);
   const settled = reg.balance <= 0 && reg.paid_amount > 0;
@@ -80,15 +85,27 @@ const JobOrderHalf: React.FC<{ data: ReceiptData; cashierName: string; copy: 'cu
         <Cell label="Mobile">{reg.mobile_number || '—'}</Cell>
         <Cell label="Email">{reg.email || '—'}</Cell>
         {profileCells(reg).map(([label, value, span]) => <Cell key={label} label={label} span={span}>{value}</Cell>)}
-        <Cell label="Package" span={2}>
+        <Cell label="Package" span={4}>
           {pkg ? `${pkg.code} · ${pkg.name} — ${peso(soldPackagePrice(reg))}` : '—'}
         </Cell>
-        <Cell label="Add-ons / Other Fees" span={2}>
-          {addOns.length || reg.other_fees ? [
-            ...addOns.map((item) => `${item.name} ${peso(item.amount)}`),
-            ...(reg.other_fees ? [`Other fees ${peso(reg.other_fees)}`] : []),
-          ].join(' · ') : 'None'}
-        </Cell>
+        {/* Every add-on on its own line, never cut off: the client shows this to each station. */}
+        <div className="col-span-4 min-w-0 border-b border-r border-[#0a0a0a] px-[5px] py-[2px]">
+          <div className="font-mono text-[7px] font-bold uppercase tracking-wider text-[#666]">
+            Add-ons{extras.length ? ` (${extras.length})` : ''}
+          </div>
+          {extras.length ? (
+            <ol className="grid grid-cols-2 gap-x-[14px]">
+              {extras.map(([label, amount], index) => (
+                <li key={index} className="flex items-baseline justify-between gap-2 text-[10px] font-bold leading-snug">
+                  <span className="min-w-0">{index + 1}. {label}</span>
+                  <span className="shrink-0 font-mono">{peso(amount)}</span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <div className="text-[10px] font-bold">None</div>
+          )}
+        </div>
       </div>
 
       {/* Payments + totals */}
@@ -209,7 +226,7 @@ const PaymentRow: React.FC<{ payment: PaymentRecord; studio: boolean }> = ({ pay
 };
 
 const Cell: React.FC<{ label: string; span?: number; strong?: boolean; children: React.ReactNode }> = ({ label, span = 1, strong, children }) => (
-  <div className={`min-w-0 border-b border-r border-[#0a0a0a] px-[5px] py-[2px] ${span === 2 ? 'col-span-2' : ''}`}>
+  <div className={`min-w-0 border-b border-r border-[#0a0a0a] px-[5px] py-[2px] ${span === 2 ? 'col-span-2' : span === 4 ? 'col-span-4' : ''}`}>
     <div className="font-mono text-[7px] font-bold uppercase tracking-wider text-[#666]">{label}</div>
     <div className={`truncate ${strong ? 'text-[13px] font-black uppercase' : 'text-[10px] font-bold'}`}>{children}</div>
   </div>

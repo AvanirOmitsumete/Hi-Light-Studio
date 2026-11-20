@@ -202,7 +202,13 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   const liveUpdate = await Promise.race([readEvent('studioflow-workflow'), delay(4000, 'timeout', { ref: false })]);
   assert.deepEqual(liveUpdate, {}, 'The server must notify connected realtime clients.');
   const unpaid = await register(prepared);
+  // The client folder is made at the first payment, named <job no>_<Last>_<First> (no record ID).
+  const clientFolder = (student) => join(photos, 'WORKFLOW', 'MEDIA', `${student.job_order_no}_Dela Cruz_Juan Carlos`);
+  await assert.rejects(stat(clientFolder(plain)), { code: 'ENOENT' }, 'An unpaid job order has no folder yet.');
   await pay(plain, 1000);
+  assert.ok((await stat(clientFolder(plain))).isDirectory(), 'The first payment creates the client folder.');
+  assert.deepEqual((await readdir(clientFolder(plain))).sort(), ['selected', 'unselected']);
+  await assert.rejects(stat(clientFolder(unpaid)), { code: 'ENOENT' });
   assert.equal((await queue(artists[0])).length, 0);
   assert.equal((await send(api + '/queue-count')).payload.count, 1);
   assert.equal((await send(records('registrations'))).payload.items.length, 0);
@@ -318,7 +324,8 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   const plainFolder = await folder(plain);
   const path = await folder(galleryStudent);
   assert.notEqual(path, plainFolder);
-  assert.ok(path.endsWith('_' + galleryStudent.id), path);
+  assert.equal(path, clientFolder(galleryStudent));
+  assert.equal(plainFolder, clientFolder(plain));
   assert.equal((await send(api + '/chooser?q=' + plain.student_id, { token: chooser.token })).payload.items[0].availability, 'empty');
   await writeFile(join(plainFolder, 'other.png'), png);
   await writeFile(join(path, 'first.png'), png);
@@ -743,7 +750,7 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   await pay(event, 2500);
   assert.equal((await registrations(event)).payload.status, 'paid');
   const walkinFolder = (await send(`${api}/photo-folder/${event.id}`, { method: 'POST', token: photographer })).payload.path;
-  assert.match(walkinFolder.replaceAll('\\', '/'), /\/WALK-IN\/\d{4}-\d{2}\/\d{5}_Reyes_Family_[a-z0-9]+$/, 'Walk-in photos are filed by month.');
+  assert.match(walkinFolder.replaceAll('\\', '/'), /\/WALK-IN\/\d{4}-\d{2}\/\d{5}_Reyes_Family$/, 'Walk-in photos are filed by month, with no record ID in the name.');
   // School clients cannot pick walk-in packages, and each type can be switched off.
   const schoolForm = await register(standard);
   assert.equal(schoolForm.client_kind, 'school');
@@ -884,6 +891,44 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   assert.deepEqual((await send(api + '/camera/browse?path=' + encodeURIComponent(home), { token: photographer })).payload.folders
     .map((folder) => folder.name).includes('camera'), true);
   await send(records('camera_stations', camera.id), { token: photographer, method: 'DELETE', status: 404 });
+
+  // Job order numbers stay unique when several kiosks register at the same moment.
+  const together = await Promise.all(Array.from({ length: 6 }, () => register(standard)));
+  const numbers = together.map((student) => student.job_order_no);
+  assert.equal(new Set(numbers).size, numbers.length, numbers.join(', '));
+  assert.deepEqual(numbers.map(Number).sort((a, b) => a - b),
+    Array.from({ length: 6 }, (_, index) => Math.min(...numbers.map(Number)) + index), 'Numbers are consecutive.');
+  const indexDb = new DatabaseSync(join(data, 'data.db'), { readOnly: true });
+  try {
+    assert.ok(indexDb.prepare("SELECT 1 FROM sqlite_master WHERE name = 'idx_registration_job_order_no'").get(), 'Unique job order index');
+  } finally { indexDb.close(); }
+
+  // PDF copies of the paperwork go to <client folder>/RECEIPTS, under names taken from the database.
+  const docsClient = together[0];
+  const docsPayment = await pay(docsClient, 1000);
+  const pdf = (text) => new Blob([Buffer.from('%PDF-1.4\n' + text + '\n%%EOF')], { type: 'application/pdf' });
+  const documents = (student, files, token = cashier, status = 200) => {
+    const form = new FormData();
+    for (const [name, blob] of files) form.append('files', blob, name);
+    return send(`${api}/registrations/${student.id}/documents`, { method: 'POST', token, body: form, status }).then((r) => r.payload);
+  };
+  const jobPdf = `JO-${docsClient.job_order_no}.pdf`;
+  const receiptPdf = `${docsPayment.receipt_no}.pdf`;
+  const saved = await documents(docsClient, [[jobPdf, pdf('job order v1')], [receiptPdf, pdf('receipt')]]);
+  assert.deepEqual(saved.saved, [jobPdf, receiptPdf]);
+  const receiptsDir = join(clientFolder(docsClient), 'RECEIPTS');
+  assert.deepEqual((await readdir(receiptsDir)).sort(), [jobPdf, receiptPdf].sort());
+  // A later save replaces the copy (e.g. the job order after a cancel, with its stamp).
+  await documents(docsClient, [[jobPdf, pdf('job order v2')]], admin);
+  assert.match(await readFile(join(receiptsDir, jobPdf), 'utf8'), /job order v2/);
+  assert.deepEqual((await readdir(receiptsDir)).sort(), [jobPdf, receiptPdf].sort(), 'No temporary files are left behind.');
+  // Only this job order's own documents, only PDFs, only cashier / admin, and only once there is a folder.
+  await documents(docsClient, [['JO-99999.pdf', pdf('other')]], cashier, 400);
+  await documents(docsClient, [['../../escape.pdf', pdf('escape')]], cashier, 400);
+  await documents(docsClient, [[jobPdf, pdf('fine')], [receiptPdf, new Blob(['not a pdf'])]], cashier, 400);
+  assert.match(await readFile(join(receiptsDir, jobPdf), 'utf8'), /job order v2/, 'A rejected request writes nothing.');
+  await documents(docsClient, [[jobPdf, pdf('x')]], photographer, 403);
+  await documents(together[1], [[`JO-${together[1].job_order_no}.pdf`, pdf('unpaid')]], cashier, 409);
 
   // Both export formats use the same row matrix as the dashboard.
   const { muaReportTable } = await import('../src/features/admin/muaPerformance.ts');
