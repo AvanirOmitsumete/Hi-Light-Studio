@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import type {
+  AddOn,
+  RegistrationAddOn,
   Registration,
   Organization,
   Course,
@@ -14,13 +16,19 @@ import { getRegistrationAddOns, sumAddOnAmounts } from '../../../utils/registrat
 import { isWalkIn } from '../../../utils/clientInfo';
 import { useStudioSettings } from '../../../hooks/useStudioSettings';
 
-export type RegistrationEdits = Partial<Registration> & { mua_correction?: 'required' | 'waived' };
+export type RegistrationEdits = Omit<Partial<Registration>, 'add_ons'> & {
+  mua_correction?: 'required' | 'waived';
+  /** Add-on choices only: the server prices them from the catalog (ones already on the order keep their price). */
+  add_ons?: Array<{ id?: string; code?: string; name?: string }>;
+};
 
 interface EditStudentModalProps {
   registration: Registration;
   organizations: Organization[];
   courses: Course[];
   packages: Package[];
+  /** Add-on catalog: active items can be added to the order. */
+  addOnCatalog?: AddOn[];
   onClose: () => void;
   onSave: (id: string, data: RegistrationEdits) => Promise<void>;
 }
@@ -30,6 +38,7 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
   organizations,
   courses,
   packages,
+  addOnCatalog = [],
   onClose,
   onSave,
 }) => {
@@ -62,14 +71,41 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
   const [muaCorrection, setMuaCorrection] = useState<NonNullable<RegistrationEdits['mua_correction']> | ''>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const addOns = getRegistrationAddOns(reg.add_ons);
-  const selectedPkg = packages.find((p) => p.id === packageId);
-  const packageChanged = selectedPkg && packageId !== reg.package;
-  const currentTotal = packageChanged ? selectedPkg.amount + sumAddOnAmounts(addOns) + (reg.other_fees || 0) : reg.total_amount;
-  const currentBalance = packageChanged ? Math.max(0, currentTotal - (reg.paid_amount || 0)) : reg.balance;
-  // A cheaper package can leave the client paid beyond the new total: that money is owed back.
-  const refundDue = packageChanged ? Math.max(0, (reg.paid_amount || 0) - currentTotal) : 0;
+  // Add-ons: the ones on the order keep the price they were sold at; new ones show today's catalog price.
+  // The server prices them again from the catalog, so only their ids are sent.
+  const savedAddOns = getRegistrationAddOns(reg.add_ons);
+  const [addOns, setAddOns] = useState<RegistrationAddOn[]>(savedAddOns);
+  const [addOnToAdd, setAddOnToAdd] = useState('');
+  const savedIds = new Set(savedAddOns.map((item) => item.id).filter(Boolean));
+  const addOnKey = (items: RegistrationAddOn[]) => items.map((item) => item.id ?? item.name).join('|');
+  const addOnsChanged = addOnKey(addOns) !== addOnKey(savedAddOns);
+  // Active add-ons offered to this type of client (empty type = both) and not already on the order.
+  const addableAddOns = addOnCatalog.filter((item) => item.is_active
+    && [walkIn ? 'walkin' : 'school', 'both'].includes(item.client_kind || 'both')
+    && !addOns.some((selected) => selected.id === item.id));
   const isCancelled = reg.status === 'cancelled';
+  // Released orders are closed; cancelled ones owe nothing (Restore first).
+  const canEditAddOns = !isCancelled && reg.status !== 'released';
+  const addAddOn = () => {
+    const item = addOnCatalog.find((entry) => entry.id === addOnToAdd);
+    if (!item) return;
+    setAddOns((current) => [...current, { id: item.id, code: item.code, name: item.name, amount: item.amount }]);
+    setAddOnToAdd('');
+  };
+
+  const cents = (value: number | undefined) => Math.round((value || 0) * 100);
+  const selectedPkg = packages.find((p) => p.id === packageId);
+  const packageChanged = Boolean(selectedPkg) && packageId !== reg.package;
+  const priceChanged = packageChanged || addOnsChanged;
+  // Same rule as the server: a new package is priced from the catalog; otherwise only the add-ons are swapped.
+  const totalCents = packageChanged && selectedPkg
+    ? cents(selectedPkg.amount) + cents(sumAddOnAmounts(addOns)) + cents(reg.other_fees)
+    : cents(reg.total_amount) - cents(sumAddOnAmounts(savedAddOns)) + cents(sumAddOnAmounts(addOns));
+  const currentTotal = totalCents / 100;
+  const paid = reg.paid_amount || 0;
+  const currentBalance = !priceChanged ? reg.balance : isCancelled ? 0 : Math.max(0, currentTotal - paid);
+  // A lower price can leave the client paid beyond the new total: that money is owed back.
+  const refundDue = priceChanged && !isCancelled ? Math.max(0, paid - currentTotal) : 0;
   const beforePhotography = ['pending_payment', 'paid'].includes(reg.status);
   const canCorrectMua = beforePhotography && !reg.makeup_state;
 
@@ -95,6 +131,7 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
           course: courseId,
         }),
         package: packageId,
+        ...(addOnsChanged ? { add_ons: addOns.map((item) => (item.id ? { id: item.id } : { code: item.code, name: item.name })) } : {}),
         pictorial_date: pictorialDate ? `${pictorialDate} 00:00:00.000Z` : '',
         status,
         framing_status: framingStatus,
@@ -337,19 +374,67 @@ export const EditStudentModal: React.FC<EditStudentModalProps> = ({
                 Analytics &amp; Overview → ledger (filter “Refund Due”).
               </div>
             )}
-            {addOns.length > 0 && (
-              <div className="space-y-1 border-t border-neutral-200 pt-2">
-                <h4 className="font-black uppercase">Selected Add-ons</h4>
+            <div className="space-y-2 border-t border-neutral-200 pt-2">
+              <h4 className="font-black uppercase">Add-ons</h4>
+              {addOns.length === 0 && <p className="text-neutral-500">No add-ons on this job order.</p>}
+              {addOns.length > 0 && (
                 <ul className="space-y-1">
-                  {addOns.map((item, index) => (
-                    <li key={item.id ?? index} className="flex justify-between gap-3">
-                      <span>{item.name}</span>
-                      <span className="shrink-0">{formatCurrency(item.amount, { exact: true })}</span>
-                    </li>
-                  ))}
+                  {addOns.map((item, index) => {
+                    const isNew = !item.id || !savedIds.has(item.id);
+                    const catalogItem = addOnCatalog.find((entry) => entry.id === item.id);
+                    return (
+                      <li key={item.id ?? index} className="flex items-center justify-between gap-3">
+                        <span className="min-w-0">
+                          {item.name}
+                          {isNew && <span className="ml-2 px-1 border border-gold text-[9px] font-black uppercase text-gold-soft">New</span>}
+                          {isNew && catalogItem?.requires_mua && (
+                            <span className="ml-1 text-[10px] text-neutral-500">adds makeup / grooming</span>
+                          )}
+                        </span>
+                        <span className="flex shrink-0 items-center gap-2">
+                          <span title={isNew ? 'Today\'s catalog price' : 'Price it was sold at'}>{formatCurrency(item.amount, { exact: true })}</span>
+                          {canEditAddOns && (
+                            <button type="button" onClick={() => setAddOns((current) => current.filter((_, i) => i !== index))}
+                              aria-label={`Remove ${item.name}`}
+                              className="btn-tactile px-2 py-0.5 border border-red-600 text-red-700 bg-canvas text-[10px] font-black uppercase cursor-pointer">
+                              Remove
+                            </button>
+                          )}
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
-              </div>
-            )}
+              )}
+              {canEditAddOns ? (
+                addableAddOns.length > 0 && (
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <select value={addOnToAdd} onChange={(e) => setAddOnToAdd(e.target.value)} aria-label="Add-on to add"
+                      className="flex-1 min-w-0 p-2 bg-canvas border border-line">
+                      <option value="">Choose an add-on to add…</option>
+                      {addableAddOns.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.code ? `${item.code} - ` : ''}{item.name} ({formatCurrency(item.amount, { exact: true })}){item.requires_mua ? ' · makeup / grooming' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="button" onClick={addAddOn} disabled={!addOnToAdd}
+                      className="btn-tactile px-4 py-2 bg-gold text-on-gold border border-line font-black uppercase cursor-pointer disabled:opacity-40">
+                      Add
+                    </button>
+                  </div>
+                )
+              ) : (
+                <p className="text-[10px] text-neutral-600">
+                  {isCancelled ? 'Restore the job order to change its add-ons.' : 'Released orders can\'t change add-ons.'}
+                </p>
+              )}
+              {addOnsChanged && (
+                <p className="text-[10px] text-neutral-600">
+                  Total and balance update when you save. New add-ons are charged at today&apos;s catalog price; the cashier collects any new balance.
+                </p>
+              )}
+            </div>
             {beforePhotography && (
               <div className="space-y-1 border-t border-neutral-200 pt-2">
                 <p>Saved MUA requirement: {reg.makeup_service || 'No MUA required'}</p>

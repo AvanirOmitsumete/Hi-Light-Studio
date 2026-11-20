@@ -129,18 +129,18 @@ export function buildOverallRows({ registrations, payments, refunds = [], organi
     const addOns = getRegistrationAddOns(reg.add_ons);
     const extras = addOns.reduce((sum, item) => sum + cents(item.amount), cents(reg.other_fees));
     const due = Math.max(0, Number.isFinite(reg.total_amount) ? cents(reg.total_amount) : cents(pkg?.amount) + extras);
-    // The bill and the current catalog price are separate values. An add-on can
-    // be listed without having been included in the stored bill.
-    const packageAmount = pkg ? cents(pkg.amount) : null;
+    // The package at the price it was sold for (total − add-ons − other fees), not today's catalog price.
+    const packageAmount = pkg ? (Number.isFinite(reg.total_amount) ? due - extras : cents(pkg.amount)) : null;
     const packageColumn: PackageColumn | undefined = pkg
       ? reportPackageFor(pkg, mapping) ?? `catalog:${pkg.id}`
       : undefined;
     const poseEntries = addOns.filter((item) => /^additional poses?$/.test(normalize(item.name ?? ''))
       || /^add(?:itional)? poses?$/.test(normalize(item.code ?? '')));
+    // What the client was charged for extra poses (price × quantity), not a fixed rate.
     const poses = poseEntries.length ? poseEntries.reduce((sum, item) => {
       const quantity = item.quantity;
-      return sum + (typeof quantity === 'number' && Number.isInteger(quantity) && quantity > 0 ? quantity : 1);
-    }, 0) * 35000 : null;
+      return sum + cents(item.amount) * (typeof quantity === 'number' && Number.isInteger(quantity) && quantity > 0 ? quantity : 1);
+    }, 0) : null;
     const money = paymentBreakdown(paymentsByRegistration.get(reg.id) ?? [], due, refundedByRegistration.get(reg.id) ?? 0);
     return [{
       id: reg.id,

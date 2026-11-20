@@ -129,6 +129,7 @@ export const AdminPage: React.FC = () => {
               levels={admin.levels}
               courses={admin.courses}
               packages={admin.packages}
+              addOns={admin.addOns}
               onUpdateRegistration={admin.handleUpdateRegistration}
               onCancelRegistration={admin.handleCancelRegistration}
               onRestoreRegistration={admin.handleRestoreRegistration}

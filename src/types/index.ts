@@ -139,6 +139,8 @@ export interface AddOn {
   requires_mua?: boolean;
   mua_service_types?: string[];
   is_active?: boolean;
+  /** Which kiosk form offers it; empty means both (unlike packages, where empty means school). */
+  client_kind?: ClientKind | 'both' | '';
 }
 
 export interface RegistrationAddOn {

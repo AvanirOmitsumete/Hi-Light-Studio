@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Edit3, Ban, Users, FileDown, RotateCcw } from 'lucide-react';
-import type { Registration, Organization, Level, Course, Package } from '../../../types';
+import type { AddOn, Registration, Organization, Level, Course, Package } from '../../../types';
 import { formatCurrency, formatClientName } from '../../../utils/formatters';
 import { RegistrationStatusBadge } from '../../../components/RegistrationStatusBadge';
 import { EditStudentModal, type RegistrationEdits } from './EditStudentModal';
@@ -68,6 +68,8 @@ interface AdminStudentsTabProps {
   levels: Level[];
   courses: Course[];
   packages: Package[];
+  /** The add-on catalog, for adding add-ons to a job order after registration. */
+  addOns: AddOn[];
   onUpdateRegistration: (id: string, data: RegistrationEdits) => Promise<void>;
   onCancelRegistration: (id: string, reason: string) => Promise<void>;
   onRestoreRegistration: (id: string) => Promise<void>;
@@ -118,6 +120,7 @@ const StudentList: React.FC<AdminStudentsTabProps> = ({
   levels,
   courses,
   packages,
+  addOns,
   onUpdateRegistration,
   onCancelRegistration,
   onRestoreRegistration,
@@ -433,6 +436,7 @@ const StudentList: React.FC<AdminStudentsTabProps> = ({
           organizations={organizations}
           courses={courses}
           packages={packages}
+          addOnCatalog={addOns}
           onClose={() => setEditingStudent(null)}
           onSave={async (id, data) => {
             try {

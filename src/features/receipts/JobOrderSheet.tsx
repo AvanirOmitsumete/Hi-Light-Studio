@@ -4,7 +4,7 @@ import { STUDIO_INFO } from '../../constants/studio';
 import { formatJobOrderNo, formatQueueNumber } from '../../utils/formatters';
 import { getRegistrationAddOns } from '../../utils/registrationAddOns';
 import {
-  isCounted, jobOrderMarks, methodLabel, paymentTypeLabel, peso, receiptDate, receiptLabel, signatureUrl, statusLabel, visiblePayments, profileCells,
+  isCounted, jobOrderMarks, methodLabel, soldPackagePrice, paymentTypeLabel, peso, receiptDate, receiptLabel, signatureUrl, statusLabel, visiblePayments, profileCells,
   type ReceiptData,
 } from './receiptData';
 
@@ -81,7 +81,7 @@ const JobOrderHalf: React.FC<{ data: ReceiptData; cashierName: string; copy: 'cu
         <Cell label="Email">{reg.email || '—'}</Cell>
         {profileCells(reg).map(([label, value, span]) => <Cell key={label} label={label} span={span}>{value}</Cell>)}
         <Cell label="Package" span={2}>
-          {pkg ? `${pkg.code} · ${pkg.name} — ${peso(pkg.amount)}` : '—'}
+          {pkg ? `${pkg.code} · ${pkg.name} — ${peso(soldPackagePrice(reg))}` : '—'}
         </Cell>
         <Cell label="Add-ons / Other Fees" span={2}>
           {addOns.length || reg.other_fees ? [

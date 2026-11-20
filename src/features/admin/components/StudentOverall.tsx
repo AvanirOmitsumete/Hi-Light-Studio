@@ -20,7 +20,7 @@ const leadingColumns = [
   { id: 'addOns', label: 'Add-ons' },
 ] as const;
 const trailingColumns = [
-  { id: 'poses', label: 'Additional Poses', description: '₱350 per pose' },
+  { id: 'poses', label: 'Additional Poses', description: 'Amount charged for extra poses' },
   { id: 'fullyPaid', label: 'Full Payment' },
   { id: 'additionalPayment', label: 'Additional Payment' },
   { id: 'downPayment', label: 'Down Payment' },

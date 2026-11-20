@@ -681,9 +681,12 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
     ['pending_payment', 0, 1000, 'unpaid']);
   await send(records('registrations', refundedAll.id), { token: admin, method: 'DELETE', status: 409 });
   // Orders restored to "Paid" with nothing held before that fix are repaired by migration 1793802600.
+  // Recreate the broken state, mark the repair as not yet applied, and let `migrate up` run it again.
   const brokenDb = new DatabaseSync(join(data, 'data.db'));
-  try { brokenDb.prepare("UPDATE registrations SET status = 'paid' WHERE id = ?").run(refundedAll.id); } finally { brokenDb.close(); }
-  execFileSync(executable, ['migrate', 'down', '1', ...flags], { ...options, input: 'y\n' });
+  try {
+    brokenDb.prepare("UPDATE registrations SET status = 'paid' WHERE id = ?").run(refundedAll.id);
+    brokenDb.prepare("DELETE FROM _migrations WHERE file = '1793802600_repair_refunded_restores.js'").run();
+  } finally { brokenDb.close(); }
   execFileSync(executable, ['migrate', 'up', ...flags], options);
   assert.equal((await registrations(refundedAll)).payload.status, 'pending_payment', 'the repair sends it back to Pending Payment');
   const mistake = await register(standard);
@@ -725,6 +728,18 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
     ['walkin', '', '', '', 'Marco Polo Plaza'], 'Walk-ins carry no school details.');
   const studio = await walkIn({ event_date: '2026-12-12 00:00:00.000Z', event_venue: 'ignored for studio sessions' });
   assert.deepEqual([studio.event_date, studio.event_venue], ['', ''], 'In-studio sessions drop the event date and venue.');
+  // Add-ons are offered to school clients, walk-ins or both, like packages. Existing ones became "both".
+  const legacyAddOn = (await send(records('add_ons') + "?filter=code='ADD-HAIRMAKEUP'", { token: admin })).payload.items[0];
+  assert.equal(legacyAddOn.client_kind, 'both', 'add-ons from before the setting are offered to everyone');
+  const toga = await create('add_ons', { code: 'TOGA', name: 'Toga rental', amount: 200, is_active: true, client_kind: 'school' });
+  const familyAlbum = await create('add_ons', { code: 'ALBUM', name: 'Family album', amount: 900, is_active: true, client_kind: 'walkin' });
+  await send(records('add_ons'), { token: admin, method: 'POST', body: { code: 'BAD', name: 'Bad kind', amount: 1, is_active: true, client_kind: 'everyone' }, status: 400 });
+  refused = await walkIn({ add_ons: JSON.stringify([{ id: toga.id }]) }, 400);
+  assert.match(refused.message, /not offered to walk-in clients/);
+  const albumClient = await walkIn({ add_ons: JSON.stringify([{ id: familyAlbum.id }]) });
+  assert.deepEqual([albumClient.add_ons[0].name, albumClient.total_amount], ['Family album', 3400]);
+  assert.match((await register(standard, [{ id: familyAlbum.id }], 400)).message, /not offered to school clients/);
+  assert.match((await registrations(albumClient, admin, { add_ons: [{ id: familyAlbum.id }, { id: toga.id }] }, 400)).payload.message, /not offered to walk-in clients/);
   await pay(event, 2500);
   assert.equal((await registrations(event)).payload.status, 'paid');
   const walkinFolder = (await send(`${api}/photo-folder/${event.id}`, { method: 'POST', token: photographer })).payload.path;
@@ -779,6 +794,24 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   assert.deepEqual([withFees.total_amount, withFees.paid_amount, withFees.balance, withFees.payment_status], [1150, 500, 650, 'downpayment']);
   const feeRow = (await send(api + '/student-excel', { token: admin })).payload.rows.find((row) => row.jobOrder === feeClient.job_order_no);
   assert.deepEqual([feeRow.due, feeRow.otherFees, feeRow.packageAmount], [115000, 15000, 100000], 'the export splits the total into package and other fees');
+
+  // Add-ons after registration: admin only, catalog-priced, and the total follows.
+  const frame = await create('add_ons', { code: 'FRAME', name: 'Frame upgrade', amount: 400, is_active: true });
+  const addOnClient = await register(standard);
+  await pay(addOnClient, 500, 'initial');
+  await registrations(addOnClient, cashier, { add_ons: [{ id: frame.id }] }, 403);
+  await registrations(addOnClient, admin, { add_ons: [{ id: 'notarealaddon00', name: 'Free stuff', amount: 9999 }] }, 400);
+  await registrations(addOnClient, admin, { add_ons: [{ id: frame.id }, { id: frame.id }] }, 400);
+  let priced = (await registrations(addOnClient, admin, { add_ons: [{ id: frame.id, amount: 1 }] })).payload;
+  assert.deepEqual([priced.add_ons[0].amount, priced.total_amount, priced.balance], [400, 1400, 900], 'the catalog price is used, not the one sent');
+  await patchCatalog('add_ons', frame, { amount: 650 });
+  priced = (await registrations(addOnClient, admin, { add_ons: [{ id: frame.id }], family_name: 'Kept Price' })).payload;
+  assert.deepEqual([priced.add_ons[0].amount, priced.total_amount], [400, 1400], 'an add-on already on the order keeps the price it was sold at');
+  priced = (await registrations(addOnClient, admin, { add_ons: [] })).payload;
+  assert.deepEqual([priced.add_ons.length, priced.total_amount, priced.balance], [0, 1000, 500], 'removing an add-on lowers the total');
+  // Catalog prices can't be negative.
+  await send(records('add_ons'), { token: admin, method: 'POST', body: { code: 'NEG', name: 'Negative', amount: -500, is_active: true }, status: 400 });
+  await send(records('packages', standard.id), { token: admin, method: 'PATCH', body: { amount: -1 }, status: 400 });
 
   // Camera hot-folder import: finished photos move from the camera's output
   // folder into the folder of the client linked to the camera.

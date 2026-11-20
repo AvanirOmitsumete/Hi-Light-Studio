@@ -11,6 +11,7 @@ import { parseRosterCsv, exportRegistrationsToCsv } from '../../utils/csv';
 import { PROTECTED_SYSTEM_USERNAMES } from '../../constants/studio';
 import { overviewMetrics } from './overviewMetrics';
 import type { DateRange, OverallScope, StudentExcelData } from './studentExcel';
+import type { RegistrationEdits } from './components/EditStudentModal';
 
 export type PackageKind = 'school' | 'walkin' | 'both';
 
@@ -440,7 +441,7 @@ export function useAdminData() {
     }
   };
 
-  const handleAddAddOn = async (name: string, code: string, amount: number, requiresMua: boolean, serviceTypes: string[]) => {
+  const handleAddAddOn = async (name: string, code: string, amount: number, requiresMua: boolean, serviceTypes: string[], clientKind: PackageKind) => {
     if (!name.trim()) return;
     try {
       await pb.collection('add_ons').create({
@@ -449,6 +450,7 @@ export function useAdminData() {
         amount: Number(amount),
         requires_mua: requiresMua,
         mua_service_types: serviceTypes,
+        client_kind: clientKind,
         is_active: true,
       });
       loadAllData();
@@ -464,7 +466,8 @@ export function useAdminData() {
     code: string,
     amount: number,
     requiresMua: boolean,
-    serviceTypes: string[]
+    serviceTypes: string[],
+    clientKind: PackageKind,
   ) => {
     try {
       await pb.collection('add_ons').update(id, {
@@ -473,6 +476,7 @@ export function useAdminData() {
         amount: Number(amount),
         requires_mua: requiresMua,
         mua_service_types: serviceTypes,
+        client_kind: clientKind,
       });
       loadAllData();
     } catch (err) {
@@ -533,7 +537,7 @@ export function useAdminData() {
   };
 
   // --- Student Registration Mutations (T028) ---
-  const handleUpdateRegistration = async (id: string, data: Partial<Registration> & { mua_correction?: 'required' | 'waived' }) => {
+  const handleUpdateRegistration = async (id: string, data: RegistrationEdits) => {
     await pb.collection('registrations').update(id, data);
     loadAllData();
   };

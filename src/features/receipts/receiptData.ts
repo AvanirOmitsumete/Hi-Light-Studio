@@ -1,6 +1,7 @@
 import { pb } from '../../db/pocketbase';
 import { PAYMENT_METHOD_OPTIONS, RECEIPT_TERMS_CLAUSES, STUDIO_INFO } from '../../constants/studio';
 import { formatJobOrderNo } from '../../utils/formatters';
+import { getRegistrationAddOns, sumAddOnAmounts } from '../../utils/registrationAddOns';
 import type { PaymentRecord, RefundRecord, Registration, StudioSettings } from '../../types';
 import { eventDateLabel, isWalkIn } from '../../utils/clientInfo';
 
@@ -88,6 +89,16 @@ export function profileLine(reg: Registration): string {
   }
   return [reg.expand?.organization?.name, reg.expand?.course?.code || reg.expand?.course?.name || reg.course]
     .filter(Boolean).join(' · ') || '—';
+}
+
+/**
+ * The package price this job order was sold at. The server prices a job order as
+ * package + add-ons + other fees, so this stays right after the catalog price changes
+ * (the package record itself only knows today's price).
+ */
+export function soldPackagePrice(reg: Registration): number {
+  const cents = (value: number | undefined) => Math.round((value || 0) * 100);
+  return (cents(reg.total_amount) - Math.round(sumAddOnAmounts(getRegistrationAddOns(reg.add_ons)) * 100) - cents(reg.other_fees)) / 100;
 }
 
 export const isCounted = (payment: PaymentRecord) => (payment.status || 'completed') === 'completed';

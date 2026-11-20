@@ -35,8 +35,8 @@ interface AdminPackagesTabProps {
   ) => Promise<void>;
   onTogglePackageActive: (id: string, current: boolean) => Promise<void>;
   onDeletePackage: (id: string) => Promise<void>;
-  onAddAddOn: (name: string, code: string, amount: number, requiresMua: boolean, serviceTypes: string[]) => Promise<void>;
-  onUpdateAddOn: (id: string, name: string, code: string, amount: number, requiresMua: boolean, serviceTypes: string[]) => Promise<void>;
+  onAddAddOn: (name: string, code: string, amount: number, requiresMua: boolean, serviceTypes: string[], clientKind: PackageKind) => Promise<void>;
+  onUpdateAddOn: (id: string, name: string, code: string, amount: number, requiresMua: boolean, serviceTypes: string[], clientKind: PackageKind) => Promise<void>;
   onToggleAddOnActive: (id: string, current: boolean) => Promise<void>;
   onDeleteAddOn: (id: string) => Promise<void>;
 }
@@ -89,6 +89,7 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
   const [newAddonAmount, setNewAddonAmount] = useState(250);
   const [newAddonRequiresMua, setNewAddonRequiresMua] = useState(false);
   const [newAddonMuaTypes, setNewAddonMuaTypes] = useState<string[]>([]);
+  const [newAddonKind, setNewAddonKind] = useState<PackageKind>('both');
 
   // Editing Add-on State
   const [editingAddonId, setEditingAddonId] = useState<string | null>(null);
@@ -97,6 +98,7 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
   const [editAddonAmount, setEditAddonAmount] = useState(0);
   const [editAddonRequiresMua, setEditAddonRequiresMua] = useState(false);
   const [editAddonMuaTypes, setEditAddonMuaTypes] = useState<string[]>([]);
+  const [editAddonKind, setEditAddonKind] = useState<PackageKind>('both');
 
   // Confirmation Modal State
   const [confirmModalState, setConfirmModalState] = useState<{
@@ -150,12 +152,13 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
     setEditAddonAmount(add.amount);
     setEditAddonRequiresMua(!!add.requires_mua);
     setEditAddonMuaTypes(add.mua_service_types ?? []);
+    setEditAddonKind(addOnKind(add));
   };
 
   const handleSaveAddonEdit = async () => {
     if (!editingAddonId) return;
     try {
-      await onUpdateAddOn(editingAddonId, editAddonName, editAddonCode, editAddonAmount, editAddonRequiresMua, editAddonMuaTypes);
+      await onUpdateAddOn(editingAddonId, editAddonName, editAddonCode, editAddonAmount, editAddonRequiresMua, editAddonMuaTypes, editAddonKind);
       toast.success(`Add-on "${editAddonName}" updated successfully`);
       setEditingAddonId(null);
     } catch (err: unknown) {
@@ -167,7 +170,7 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
     e.preventDefault();
     if (!newAddonName.trim()) return;
     try {
-      await onAddAddOn(newAddonName, newAddonCode, newAddonAmount, newAddonRequiresMua, newAddonMuaTypes);
+      await onAddAddOn(newAddonName, newAddonCode, newAddonAmount, newAddonRequiresMua, newAddonMuaTypes, newAddonKind);
       toast.success(`Add-on "${newAddonName}" added to catalog`);
       setNewAddonName('');
       setNewAddonCode('');
@@ -519,6 +522,9 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
               <Plus className="w-4 h-4" /> Add to Catalog
             </button>
           </div>
+          <div className="sm:col-span-2">
+            <PackageKindInput value={newAddonKind} onChange={setNewAddonKind} />
+          </div>
           <div className="sm:col-span-4">
             <MuaRequirementInput checked={newAddonRequiresMua} onChange={setNewAddonRequiresMua}
               categories={serviceTypes} selected={newAddonMuaTypes} onSelect={setNewAddonMuaTypes} />
@@ -573,6 +579,7 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
                       />
                     </div>
                   </div>
+                  <PackageKindInput value={editAddonKind} onChange={setEditAddonKind} />
                   <MuaRequirementInput checked={editAddonRequiresMua} onChange={setEditAddonRequiresMua}
                     categories={serviceTypes} selected={editAddonMuaTypes} onSelect={setEditAddonMuaTypes} />
                   <div className="flex gap-2 justify-end pt-1">
@@ -602,7 +609,10 @@ export const AdminPackagesTab: React.FC<AdminPackagesTabProps> = ({
                     {add.code && (
                       <span className="text-[10px] text-neutral-500 ml-2">({add.code})</span>
                     )}
-                    <div className="mt-1"><MuaRequirementBadge required={add.requires_mua} /></div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      <MuaRequirementBadge required={add.requires_mua} />
+                      <span className="px-2 py-0.5 text-[10px] font-bold uppercase border border-neutral-400">{PACKAGE_KIND_LABELS[addOnKind(add)]}</span>
+                    </div>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <button
@@ -710,6 +720,8 @@ function MuaRequirementBadge({ required }: { required?: boolean }) {
 }
 
 const PACKAGE_KIND_LABELS: Record<PackageKind, string> = { school: 'For school', walkin: 'For walk-in', both: 'School & walk-in' };
+/** An add-on's client type; empty (older records) means both. */
+const addOnKind = (add: AddOn): PackageKind => (add.client_kind || 'both') as PackageKind;
 
 /** Which kiosk form offers the package. */
 const PackageKindInput: React.FC<{ value: PackageKind; onChange: (value: PackageKind) => void }> = ({ value, onChange }) => (

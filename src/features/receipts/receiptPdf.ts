@@ -4,7 +4,7 @@ import { STUDIO_INFO } from '../../constants/studio';
 import { formatJobOrderNo, formatQueueNumber } from '../../utils/formatters';
 import { getRegistrationAddOns } from '../../utils/registrationAddOns';
 import {
-  isCounted, jobOrderMarks, loadReceiptData, loadRefundSignature, methodLabel, paymentTypeLabel, peso, receiptDate, receiptLabel, refundAcknowledgment, refundFigures, signatureUrl, statusLabel,
+  isCounted, jobOrderMarks, soldPackagePrice, loadReceiptData, loadRefundSignature, methodLabel, paymentTypeLabel, peso, receiptDate, receiptLabel, refundAcknowledgment, refundFigures, signatureUrl, statusLabel,
   visiblePayments, profileCells, profileLine,
   type ReceiptData, type ReceiptPaper, type RefundSlipData,
 } from './receiptData';
@@ -135,7 +135,7 @@ function drawJobOrderHalf(doc: jsPDF, data: ReceiptData, copy: 'customer' | 'stu
     ['MOBILE', reg.mobile_number || '—', 1],
     ['EMAIL', reg.email || '—', 1],
     ...profileCells(reg).map(([label, value, span]): [string, string, number] => [label.toUpperCase(), value, span]),
-    ['PACKAGE', pkg ? `${pkg.code} · ${pkg.name} — ${php(pkg.amount)}` : '—', 2],
+    ['PACKAGE', pkg ? `${pkg.code} · ${pkg.name} — ${php(soldPackagePrice(reg))}` : '—', 2],
     ['ADD-ONS / OTHER FEES', extras.length ? extras.join(' · ') : 'None', 2],
   ];
   let cx = x;

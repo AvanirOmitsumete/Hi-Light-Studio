@@ -249,11 +249,17 @@ export function useRegistrationForm() {
     ? packages.filter((pkg) => [clientKind, 'both'].includes(pkg.client_kind || 'school'))
     : [];
 
+  // Add-ons offered to this type of client (older add-ons without a type are offered to both).
+  const kindAddOns = clientKind
+    ? addOnsList.filter((item) => [clientKind, 'both'].includes(item.client_kind || 'both'))
+    : [];
+  const chosenAddOns = selectedAddOns.filter((id) => kindAddOns.some((item) => item.id === id));
+
   // Live Total Calculation
   const selectedPackage = kindPackages.find((pkg) => pkg.id === selectedPackageId);
   const totalAmount = selectedPackage
-    ? selectedPackage.amount + addOnsList.reduce((sum, item) => (
-      selectedAddOns.includes(item.id) ? sum + item.amount : sum
+    ? selectedPackage.amount + kindAddOns.reduce((sum, item) => (
+      chosenAddOns.includes(item.id) ? sum + item.amount : sum
     ), 0)
     : 0;
 
@@ -315,8 +321,8 @@ export function useRegistrationForm() {
     setErrors({});
     setIsSubmitting(true);
     try {
-      const selectedAddOnObjects = selectedAddOns.map((id) => {
-        const item = addOnsList.find((a) => a.id === id);
+      const selectedAddOnObjects = chosenAddOns.map((id) => {
+        const item = kindAddOns.find((a) => a.id === id);
         return { id, code: item?.code, name: item?.name || '', amount: item?.amount || 0 };
       });
 
@@ -420,6 +426,7 @@ export function useRegistrationForm() {
   const changeKind = (kind: ClientKind) => {
     setChosenKind(kind);
     setSelectedPackageId(null);
+    setSelectedAddOns([]);
     clearErrors('client_kind', 'package');
   };
 
@@ -448,7 +455,7 @@ export function useRegistrationForm() {
     levels,
     courses,
     packages: kindPackages,
-    addOnsList,
+    addOnsList: kindAddOns,
     masterList,
     // Form State & Setters
     familyName,
@@ -475,7 +482,7 @@ export function useRegistrationForm() {
     setEmail: changeField('email', setEmail),
     selectedPackageId: selectedPackage?.id ?? null,
     setSelectedPackageId: changeField('package', (id: string) => setSelectedPackageId(id)),
-    selectedAddOns,
+    selectedAddOns: chosenAddOns,
     toggleAddOn,
     paymentType,
     setPaymentType,
