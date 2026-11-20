@@ -163,6 +163,7 @@ routerAdd("GET", "/api/studioflow/student-excel", (e) => {
       packageCode: pkg?.code || (hasSnapshot ? snapshot.code : ""),
       packageAmount,
       addOns: Object.fromEntries(charges),
+      otherFees: record.otherFees,
       due: record.due,
       payments: paymentsByRegistration.get(record.id) || { full: 0, additional: 0, down: 0, refunded: 0 },
     };

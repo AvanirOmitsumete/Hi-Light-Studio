@@ -174,6 +174,7 @@ Use this once testing is finished and before the studio starts real work. It rem
     * After saving, the **refund slip** opens. Hand over the money and have the client **sign on screen** ("I received ₱… as a refund"), then press **Save client signature**. The signature is saved once and can't be changed. Print the slip: the signature shows on the studio copy (right half). Give the client the left half and file the right half with the job order.
     * With no signature pad or touch screen, just print and have the client sign the studio copy on paper.
     * To sign later or reprint, use **Sign / Print** (or **Print Slip** once signed) next to the refund in the ledger.
+    * In the Clients Directory, the **PDF** button of a refunded job order downloads the job order (stamped CANCELLED · REFUNDED, CANCELLED or REFUNDED) followed by all its refund slips, in one file for filing.
   * **Cancel** (Clients Directory → cancel button): needs a reason. The job order leaves every queue, owes nothing, and keeps its receipts; money received stays on record until refunded. A released order can't be cancelled.
   * **Restore** (Clients Directory → **Restore**): returns the job order to the status it had before it was cancelled (e.g. Done Shooting), with its balance recalculated. An order that was fully refunded before its shoot comes back as **Pending Payment**.
   * Payments and refunds can't be edited or deleted, and paid / balance / payment status can't be typed in by hand; they always come from the receipts and refunds.

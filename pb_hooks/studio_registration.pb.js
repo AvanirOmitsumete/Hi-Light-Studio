@@ -15,6 +15,9 @@ onRecordCreateRequest((e) => {
     refunded_amount: 0, cancelled_at: "", cancelled_by: "", cancel_reason: "", status_before_cancel: "",
     restored_at: "", restored_by: "",
   })) e.record.set(field, value);
+  // Other fees change the price: only an admin sets them (the kiosk is public, so it can't).
+  if (!e.hasSuperuserAuth() && e.auth?.getString("role") !== "admin") e.record.set("other_fees", 0);
+  if (e.record.getFloat("other_fees") < 0) throw new BadRequestError("Other fees can't be negative.");
   return e.next();
 }, "registrations");
 

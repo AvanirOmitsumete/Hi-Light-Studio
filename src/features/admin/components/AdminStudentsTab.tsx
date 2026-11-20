@@ -18,6 +18,8 @@ import type { DataTableColumn } from '../../../components/common/DataTable';
 import { clientDetail, clientGroup, clientSummary, isWalkIn } from '../../../utils/clientInfo';
 
 const WALKIN_FILTER = '__walkin';
+const REFUNDED_FILTER = '__refunded';
+const isRefunded = (reg: Registration) => (reg.refunded_amount ?? 0) > 0;
 
 const filterSections = [
   { key: 'school', title: 'Schools & Organizations' },
@@ -151,7 +153,11 @@ const StudentList: React.FC<AdminStudentsTabProps> = ({
       ],
       level: [...distinctLevels].map(([id, label]) => ({ id, label })),
       queue: statusOptions(registrations.map(({ status }) => status)),
-      financial: statusOptions(registrations.map(({ payment_status }) => payment_status)),
+      financial: [
+        ...statusOptions(registrations.map(({ payment_status }) => payment_status)),
+        // Not a payment status: any job order with money given back (cancelled or overpaid).
+        ...(registrations.some(isRefunded) ? [{ id: REFUNDED_FILTER, label: 'Refunded (money given back)' }] : []),
+      ],
     };
   }, [levels, organizations, registrations]);
 
@@ -229,7 +235,8 @@ const StudentList: React.FC<AdminStudentsTabProps> = ({
       if (filters.school.length && !filters.school.includes(isWalkIn(r) ? WALKIN_FILTER : r.organization ?? '')) return false;
       if (filters.level.length && !filters.level.includes(levelNames.get(r.level ?? '') ?? '')) return false;
       if (filters.queue.length && !filters.queue.includes(r.status)) return false;
-      if (filters.financial.length && !filters.financial.includes(r.payment_status)) return false;
+      if (filters.financial.length && !filters.financial.includes(r.payment_status)
+        && !(filters.financial.includes(REFUNDED_FILTER) && isRefunded(r))) return false;
 
       if (q) {
         const fullName = `${r.given_name} ${r.family_name} ${r.middle_name || ''}`.toLowerCase();
@@ -291,11 +298,18 @@ const StudentList: React.FC<AdminStudentsTabProps> = ({
         </div>
       );
     },
-    balance: (reg: Registration) => reg.balance > 0 ? (
+    balance: (reg: Registration) => <>
+      {reg.balance > 0 ? (
         <span className="text-red-600 font-black">{formatCurrency(reg.balance)}</span>
       ) : (
         <span className="text-emerald-700">✓ Settled</span>
-      ),
+      )}
+      {isRefunded(reg) && (
+        <div className="text-[10px] font-bold text-neutral-600" title="Money given back to the client (see Analytics → ledger)">
+          Refunded {formatCurrency(reg.refunded_amount ?? 0, { exact: true })}
+        </div>
+      )}
+    </>,
     status: (reg: Registration) => <RegistrationStatusBadge status={reg.status} />,
     actions: (reg: Registration) => (
       <div className="flex items-center justify-end gap-1.5">
@@ -304,7 +318,9 @@ const StudentList: React.FC<AdminStudentsTabProps> = ({
           onClick={() => void import('../../receipts/receiptPdf')
             .then((pdf) => pdf.downloadJobOrderPdfFor(reg, 'Administrator'))
             .catch((err) => { console.error('Failed to generate PDF:', err); toast.error('Could not make the job order PDF.'); })}
-          title="Download the signed job order (claim stub + studio copy)"
+          title={isRefunded(reg)
+            ? 'Download the signed job order, followed by its refund slips'
+            : 'Download the signed job order (claim stub + studio copy)'}
           className="btn-tactile inline-flex items-center gap-1 px-2 py-1 bg-canvas text-ink hover:bg-gold hover:text-on-gold border border-neutral-300 text-[10px] font-bold uppercase cursor-pointer"
         >
           <FileDown className="w-3 h-3 text-gold" />

@@ -72,6 +72,11 @@ export const CashierMobileCard: React.FC<CashierMobileCardProps> = ({
           <span className="font-mono text-[10px] text-emerald-700 font-bold block">
             Paid: {formatCurrency(reg.paid_amount)}
           </span>
+          {(reg.refunded_amount ?? 0) > 0 && (
+            <span className="font-mono text-[10px] text-neutral-600 font-bold block" title="Money given back to the client (recorded by an admin)">
+              Refunded: {formatCurrency(reg.refunded_amount ?? 0)}
+            </span>
+          )}
         </div>
         <div>
           <span className="font-mono text-[9px] font-bold uppercase text-neutral-500 block">

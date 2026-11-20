@@ -54,24 +54,37 @@ onRecordUpdateRequest((e) => {
     && !e.hasSuperuserAuth() && e.auth?.getString("role") !== "admin") {
     throw new ForbiddenError("Only administrators can schedule pictorial dates.");
   }
+  const cents = (value) => typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) : 0;
+  // Other fees change the price: admin only, never negative.
+  const fees = cents(e.record.getFloat("other_fees"));
+  const feesChanged = fees !== cents(original.getFloat("other_fees"));
+  if (feesChanged && !e.hasSuperuserAuth() && e.auth?.getString("role") !== "admin") {
+    throw new ForbiddenError("Only administrators can change other fees.");
+  }
+  if (fees < 0) throw new BadRequestError("Other fees can't be negative.");
+
   const packageId = e.record.getString("package");
-  if (packageId && packageId !== original.getString("package")) {
+  const packageChanged = Boolean(packageId) && packageId !== original.getString("package");
+  let total = null;
+  if (packageChanged) {
     const pkg = e.app.findRecordById("packages", packageId);
     const base = pkg.getFloat("amount");
     e.record.set("package_snapshot", {
       id: pkg.id, code: pkg.getString("code"), name: pkg.getString("name"), amount: base,
     });
     const addOns = JSON.parse(e.record.getString("add_ons") || "null");
-    const cents = (value) => typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) : 0;
     const extras = Array.isArray(addOns) ? addOns.reduce((sum, item) => sum + cents(item?.amount), 0) : 0;
-    const total = cents(base) + extras + cents(e.record.getFloat("other_fees"));
-    const paid = cents(e.record.getFloat("paid_amount"));
-    const balance = Math.max(0, total - paid);
-    e.record.set("total_amount", total / 100);
-    e.record.set("balance", balance / 100);
-    e.record.set("payment_status", balance === 0 ? "fully_paid" : paid > 0 ? "downpayment" : "unpaid");
+    total = cents(base) + extras + fees;
   } else {
     e.record.set("package_snapshot", original.get("package_snapshot"));
+    // Same package: keep the price it was registered at and swap only the other fees.
+    if (feesChanged) total = cents(original.getFloat("total_amount")) - cents(original.getFloat("other_fees")) + fees;
+  }
+  if (total !== null) {
+    e.record.set("total_amount", total / 100);
+    // Balance and payment status from the receipts and refunds (a cancelled order still owes nothing).
+    const ledgerRules = require(__hooks + "/studio_ledger.js");
+    ledgerRules.applyTotals(e.record, ledgerRules.ledger(e.app, e.record));
   }
   return e.next();
 }, "registrations");

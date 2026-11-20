@@ -4,7 +4,7 @@ import { STUDIO_INFO } from '../../constants/studio';
 import { formatJobOrderNo, formatQueueNumber } from '../../utils/formatters';
 import { getRegistrationAddOns } from '../../utils/registrationAddOns';
 import {
-  isCounted, methodLabel, paymentTypeLabel, peso, receiptDate, receiptLabel, signatureUrl, statusLabel, visiblePayments, profileCells,
+  isCounted, jobOrderMarks, methodLabel, paymentTypeLabel, peso, receiptDate, receiptLabel, signatureUrl, statusLabel, visiblePayments, profileCells,
   type ReceiptData,
 } from './receiptData';
 
@@ -36,6 +36,9 @@ const JobOrderHalf: React.FC<{ data: ReceiptData; cashierName: string; copy: 'cu
   const { rows, hidden } = visiblePayments(payments, MAX_ROWS);
   const latest = [...payments].reverse().find(isCounted);
   const settled = reg.balance <= 0 && reg.paid_amount > 0;
+  const marks = jobOrderMarks(reg);
+  const cancelled = reg.status === 'cancelled';
+  const refundNumbers = data.refunds.map((refund) => refund.refund_no).filter(Boolean);
   const signature = signatureUrl(reg);
   const name = [reg.family_name, ', ', reg.given_name, reg.middle_name ? ` ${reg.middle_name}` : ''].join('');
 
@@ -44,6 +47,11 @@ const JobOrderHalf: React.FC<{ data: ReceiptData; cashierName: string; copy: 'cu
       aria-label={isCustomer ? 'Customer claim stub' : 'Studio accounting copy'}
       className={`relative h-[5.5in] w-[8.5in] overflow-hidden px-[0.32in] pt-[0.26in] ${isCustomer ? 'pb-[0.22in]' : 'pb-[1in]'} flex flex-col gap-[7px] text-[10px] leading-tight`}
     >
+      {marks.stamp && (
+        <div aria-hidden className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+          <span className="-rotate-[18deg] whitespace-nowrap border-4 border-[#c8102e] px-4 text-[44px] font-black tracking-[0.18em] text-[#c8102e] opacity-25">{marks.stamp}</span>
+        </div>
+      )}
       {/* Header */}
       <header className="flex items-start justify-between gap-4 border-b-2 border-[#0a0a0a] pb-[5px]">
         <div className="min-w-0">
@@ -114,12 +122,17 @@ const JobOrderHalf: React.FC<{ data: ReceiptData; cashierName: string; copy: 'cu
           <Line label="Total Billed" value={peso(reg.total_amount)} />
           {/* paid_amount is net of refunds; show the refund so the payment history still adds up. */}
           {(reg.refunded_amount ?? 0) > 0 && <Line label="Less refunds" value={`−${peso(reg.refunded_amount)}`} />}
+          {refundNumbers.length > 0 && (
+            <div className="text-right text-[7.5px] font-bold text-[#444]">{refundNumbers.join(', ')}</div>
+          )}
           <Line label={(reg.refunded_amount ?? 0) > 0 ? 'Net Paid' : 'Amount Paid'} value={peso(reg.paid_amount)} tone="#0f6b3a" />
-          <Line label="Balance" value={peso(reg.balance)} tone={reg.balance > 0 ? '#c8102e' : undefined} big />
+          <Line label={cancelled ? 'Balance (cancelled, not owed)' : 'Balance'} value={peso(reg.balance)} tone={reg.balance > 0 ? '#c8102e' : undefined} big />
+          {/* A cancelled order owes nothing; show what the studio still holds (refundable up to this). */}
+          {cancelled && <Line label="Held by studio" value={peso(Math.max(0, reg.paid_amount))} />}
           <div className={`mt-[4px] border text-center text-[10px] font-black uppercase tracking-[0.15em] py-[1px] ${
-            settled ? 'border-2 border-[#0a0a0a]' : 'border-[#0a0a0a]'
+            settled || marks.settlement ? 'border-2 border-[#0a0a0a]' : 'border-[#0a0a0a]'
           }`}>
-            {settled ? '✓ Fully Paid' : reg.paid_amount > 0 ? 'With Balance' : 'Unpaid'}
+            {marks.settlement ?? (settled ? '✓ Fully Paid' : reg.paid_amount > 0 ? 'With Balance' : 'Unpaid')}
           </div>
           {latest?.payment_method === 'cash' && (latest.cash_tendered ?? 0) > 0 && (
             <div className="mt-[3px] text-[8px] text-[#444]">

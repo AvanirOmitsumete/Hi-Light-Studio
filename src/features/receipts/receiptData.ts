@@ -10,6 +10,22 @@ export interface ReceiptData {
   payments: PaymentRecord[];
   /** Terms printed on the customer claim stub (walk-in clients have their own). */
   terms: readonly string[];
+  /** Every refund on the job order, oldest first. */
+  refunds: RefundRecord[];
+}
+
+/**
+ * The mark on a job order once money was given back or the order was cancelled:
+ * a stamp across the sheet (like VOIDED on a receipt) and the settlement label in the totals box.
+ * A partial refund (e.g. an overpayment given back) leaves the order valid: no stamp.
+ */
+export function jobOrderMarks(reg: Registration): { stamp: string; settlement: string | null } {
+  const refunded = (reg.refunded_amount ?? 0) > 0;
+  const fullyRefunded = refunded && (reg.paid_amount ?? 0) <= 0;
+  if (reg.status === 'cancelled') {
+    return { stamp: fullyRefunded ? 'CANCELLED · REFUNDED' : 'CANCELLED', settlement: fullyRefunded ? 'Cancelled · Refunded' : 'Cancelled' };
+  }
+  return fullyRefunded ? { stamp: 'REFUNDED', settlement: 'Refunded' } : { stamp: '', settlement: null };
 }
 
 export type PrintMode = 'joborder' | 'receipt';
@@ -21,7 +37,7 @@ export type PrintMode = 'joborder' | 'receipt';
 export type ReceiptPaper = 'letter' | 'half';
 
 export async function loadReceiptData(registrationId: string): Promise<ReceiptData> {
-  const [registration, payments] = await Promise.all([
+  const [registration, payments, refunds] = await Promise.all([
     pb.collection('registrations').getOne<Registration>(registrationId, {
       expand: 'organization,level,course,package,session_type', requestKey: null, cache: 'no-store',
     }),
@@ -29,6 +45,10 @@ export async function loadReceiptData(registrationId: string): Promise<ReceiptDa
       filter: pb.filter('registration = {:id}', { id: registrationId }),
       sort: 'created,id', requestKey: null, cache: 'no-store',
     }),
+    pb.collection('refunds').getFullList<RefundRecord>({
+      filter: pb.filter('registration = {:id}', { id: registrationId }),
+      sort: 'created,id', requestKey: null, cache: 'no-store',
+    }).catch(() => [] as RefundRecord[]),
   ]);
   let terms: readonly string[] = RECEIPT_TERMS_CLAUSES;
   if (isWalkIn(registration)) {
@@ -36,7 +56,7 @@ export async function loadReceiptData(registrationId: string): Promise<ReceiptDa
       .getFirstListItem<StudioSettings>("key = 'main'", { requestKey: null, cache: 'no-store' }).catch(() => null);
     if (settings?.walkin_terms?.length) terms = settings.walkin_terms;
   }
-  return { registration, payments, terms };
+  return { registration, payments, terms, refunds };
 }
 
 /**
@@ -156,21 +176,8 @@ export function stripPaper(paper: ReceiptPaper): { page: string; hint: string } 
     : { page: '8.5in 5.5in', hint: 'Load the leftover piece of a sheet (at least 4 in tall works best), long side in the printer guide. In the print window choose Paper size "Statement" (5.5 × 8.5 in), landscape.' };
 }
 
-export interface RefundSlipData extends ReceiptData {
-  /** Every refund on the job order, oldest first. */
-  refunds: RefundRecord[];
-}
-
-export async function loadRefundSlipData(registrationId: string): Promise<RefundSlipData> {
-  const [data, refunds] = await Promise.all([
-    loadReceiptData(registrationId),
-    pb.collection('refunds').getFullList<RefundRecord>({
-      filter: pb.filter('registration = {:id}', { id: registrationId }),
-      sort: 'created,id', requestKey: null, cache: 'no-store',
-    }),
-  ]);
-  return { ...data, refunds };
-}
+export type RefundSlipData = ReceiptData;
+export const loadRefundSlipData = loadReceiptData;
 
 /** The client's saved refund signature as a data URL (it is a protected file), or null when not signed. */
 export async function loadRefundSignature(refund: RefundRecord): Promise<string | null> {

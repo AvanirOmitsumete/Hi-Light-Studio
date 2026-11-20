@@ -95,6 +95,12 @@ export function CashierTable({
               Settled
             </div>
           )}
+          {/* paid_amount is net of refunds: say when money was given back, so ₱0 paid isn't mistaken for "never paid". */}
+          {(reg.refunded_amount ?? 0) > 0 && (
+            <div className="text-neutral-600 font-bold text-[10px]" title="Money given back to the client (recorded by an admin)">
+              Refunded {formatCurrency(reg.refunded_amount ?? 0)}
+            </div>
+          )}
         </>
       ),
     },

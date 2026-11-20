@@ -18,12 +18,15 @@ npm run typecheck      # tsc on tsconfig.app.json (src) and tsconfig.node.json (
 npm run build          # typecheck + vite build -> dist/
 npm run lint           # eslint (ts/tsx only; pb_hooks/migrations are not linted)
 npm run test:workflow  # PocketBase integration test (needs Node 22.13+ for node:sqlite)
+npm run check:excel    # Excel math check: builds every export from a temp server on :8099 and recalculates it (-- --verbose)
 npm run deploy         # build + copy dist/ into pb_public/ (single-port serving on :8090)
 
 run.bat                # production launcher: detects LAN IP, serves on 0.0.0.0:8090
 run.bat --build        # scripts/build.bat + scripts/deploy.bat, then serve
 scripts\reset-for-handover.bat  # wipe test data before handover (server must be stopped; backs up first)
 ```
+
+`scripts/check-excel-math.mjs` loads the app's export code through Vite's `runnerImport`, creates every money case through the real API, and recalculates each workbook with HyperFormula (dev dependency, GPL-3.0, never shipped). Run it after changing `studentExcel.ts`, `auditWorkbook.ts`, `auditData.ts` or the ledger hooks.
 
 There is no unit-test framework. `scripts/test-studio-workflow.cjs` is a single `node:test` that starts a throwaway PocketBase instance in a temp dir (its own `--dir`, plus the repo's `pb_hooks` and `pb_migrations`, with `STUDIOFLOW_PHOTOS_ROOT` pointed at a temp photo root) and runs the whole staff workflow against real folders. It first migrates up to the schema before `1793801600` and seeds legacy data, then applies the remaining migrations to test an in-place upgrade. Set `POCKETBASE_TEST_BINARY` to use a different PocketBase binary. When you add a migration that changes existing data, extend this test.
 
@@ -48,6 +51,7 @@ There is no unit-test framework. `scripts/test-studio-workflow.cjs` is a single 
 - **Printed forms (`src/features/receipts/`):**
   - `JobOrderSheet` is a letter page cut crosswise: claim stub on top, studio copy below. It prints for the first payment.
   - `PaymentReceiptSheet` is an 8.5 × 3.67 in strip (`RECEIPT_HEIGHT_IN`, a third of a letter sheet) cut lengthwise into customer and studio copies. It prints for every later payment (`printModeFor`).
+  - A cancelled or fully refunded job order prints with a stamp (`jobOrderMarks` in `receiptData.ts`). The admin directory's PDF (`downloadJobOrderPdfFor`) appends the order's refund slips, 3 per page.
   - `RefundSlipSheet` uses the same strip for a refund (`PrintRefundSlipModal`, opened after a refund is recorded and from the ledger's Print Slip button). The client signs the studio copy, on paper or on screen (`POST /api/studioflow/refunds/:id/signature`: admin only, saved once with `signed_at` / `signed_witness`; `signature` is a protected file, read with a file token via `loadRefundSignature`). Its figures come from `refundFigures` in `receiptData.ts`, as of the refund's time.
   - By default the receipt prints on the top third of a letter page, so the rest of the sheet can be reused. The `half` paper option ("Leftover piece") prints onto a leftover piece; the choice is saved per device in `localStorage['studioflow-receipt-paper']`.
   - The forms deliberately avoid solid fills, to save ink.

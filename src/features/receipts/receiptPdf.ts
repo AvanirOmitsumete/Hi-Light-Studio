@@ -4,7 +4,7 @@ import { STUDIO_INFO } from '../../constants/studio';
 import { formatJobOrderNo, formatQueueNumber } from '../../utils/formatters';
 import { getRegistrationAddOns } from '../../utils/registrationAddOns';
 import {
-  isCounted, loadReceiptData, methodLabel, paymentTypeLabel, peso, receiptDate, receiptLabel, refundAcknowledgment, refundFigures, signatureUrl, statusLabel,
+  isCounted, jobOrderMarks, loadReceiptData, loadRefundSignature, methodLabel, paymentTypeLabel, peso, receiptDate, receiptLabel, refundAcknowledgment, refundFigures, signatureUrl, statusLabel,
   visiblePayments, profileCells, profileLine,
   type ReceiptData, type ReceiptPaper, type RefundSlipData,
 } from './receiptData';
@@ -197,29 +197,47 @@ function drawJobOrderHalf(doc: jsPDF, data: ReceiptData, copy: 'customer' | 'stu
 
   // Totals
   const bx = right - totalsW;
-  box(doc, bx, y, totalsW, 0.92, 1.5);
+  const cancelled = reg.status === 'cancelled';
+  // A cancelled order has one more line (money held by the studio), so its box is taller.
+  const extra = cancelled ? 0.2 : 0;
+  box(doc, bx, y, totalsW, 0.92 + extra, 1.5);
   const settled = reg.balance <= 0 && reg.paid_amount > 0;
   const line = (label: string, value: string, ly: number, size: number, color: RGB = INK) => {
     put(doc, label, bx + 0.07, ly, { size: 5.5, bold: true, color: [85, 85, 85] });
     put(doc, value, right - 0.07, ly, { size, bold: true, mono: true, color, align: 'right' });
   };
   line('TOTAL BILLED', php(reg.total_amount), y + 0.15, 8);
-  // paid_amount is net of refunds; name it so when a refund was given.
-  line((reg.refunded_amount ?? 0) > 0 ? `NET PAID (−${php(reg.refunded_amount ?? 0)} refund)` : 'AMOUNT PAID', php(reg.paid_amount), y + 0.3, 8, GREEN);
+  // paid_amount is net of refunds; show the refund on its own line so the figures add up.
+  // (Plain "-": the built-in PDF fonts have no minus sign.)
+  if ((reg.refunded_amount ?? 0) > 0) {
+    line('LESS REFUNDS', '-' + php(reg.refunded_amount), y + 0.25, 7);
+    line('NET PAID', php(reg.paid_amount), y + 0.345, 7, GREEN);
+  } else {
+    line('AMOUNT PAID', php(reg.paid_amount), y + 0.3, 8, GREEN);
+  }
   line('BALANCE', php(reg.balance), y + 0.48, 10, reg.balance > 0 ? RED : INK);
-  box(doc, bx + 0.07, y + 0.54, totalsW - 0.14, 0.16, settled ? 1.5 : 0.75);
-  put(doc, settled ? 'FULLY PAID' : reg.paid_amount > 0 ? 'WITH BALANCE' : 'UNPAID', bx + totalsW / 2, y + 0.655, {
+  // A cancelled order owes nothing; show what the studio still holds (refundable up to this).
+  if (cancelled) {
+    put(doc, '(cancelled, not owed)', bx + 0.07, y + 0.555, { size: 5.5, italic: true, color: GREY });
+    line('HELD BY STUDIO', php(Math.max(0, reg.paid_amount)), y + 0.665, 8);
+  }
+  const marks = jobOrderMarks(reg);
+  box(doc, bx + 0.07, y + 0.54 + extra, totalsW - 0.14, 0.16, settled || marks.settlement ? 1.5 : 0.75);
+  put(doc, (marks.settlement ?? (settled ? 'FULLY PAID' : reg.paid_amount > 0 ? 'WITH BALANCE' : 'UNPAID')).toUpperCase(), bx + totalsW / 2, y + 0.655 + extra, {
     size: 7.5, bold: true, align: 'center',
   });
   const latest = [...payments].reverse().find(isCounted);
-  if (latest?.payment_method === 'cash' && (latest.cash_tendered ?? 0) > 0) {
-    put(doc, `${receiptLabel(latest)}: cash ${php(latest.cash_tendered)} · change ${php(latest.change_amount)}`, bx + 0.07, y + 0.83, {
+  const refundNumbers = data.refunds.map((refund) => refund.refund_no).filter(Boolean);
+  if (refundNumbers.length) {
+    put(doc, `Refunds: ${refundNumbers.join(', ')}`, bx + 0.07, y + 0.83 + extra, { size: 5.5, bold: true, color: [68, 68, 68], width: totalsW - 0.14 });
+  } else if (latest?.payment_method === 'cash' && (latest.cash_tendered ?? 0) > 0) {
+    put(doc, `${receiptLabel(latest)}: cash ${php(latest.cash_tendered)} · change ${php(latest.change_amount)}`, bx + 0.07, y + 0.83 + extra, {
       size: 5.5, color: [68, 68, 68], width: totalsW - 0.14,
     });
   }
 
   // Sign-offs
-  y += 1.02;
+  y += 1.02 + extra;
   const signs = isCustomer ? 2 : 3;
   const gap = 0.3;
   const sw = (w - gap * (signs - 1)) / signs;
@@ -261,6 +279,22 @@ function drawJobOrderHalf(doc: jsPDF, data: ReceiptData, copy: 'customer' | 'stu
     rule(doc, x, footerY - 0.1, right, footerY - 0.1, 0.4);
     put(doc, `File with job order ${formatJobOrderNo(reg.job_order_no).replace('№', 'No.')}`, x, footerY, { size: 6, bold: true, mono: true });
     put(doc, `Record ID ${reg.id}`, right, footerY, { size: 6, bold: true, mono: true, align: 'right' });
+  }
+
+  // CANCELLED / REFUNDED stamp across the half, like VOIDED on a receipt.
+  if (marks.stamp) {
+    doc.saveGraphicsState();
+    if (pdf) doc.setGState(new pdf.GState({ opacity: 0.25 }));
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(40);
+    doc.setTextColor(...RED);
+    const width = doc.getTextWidth(marks.stamp);
+    const angle = 18 * Math.PI / 180;
+    // Centre the rotated text on the half sheet.
+    const cx = 4.25 - (width / 2) * Math.cos(angle);
+    const cy = top + 2.75 + (width / 2) * Math.sin(angle);
+    doc.text(marks.stamp, cx, cy, { angle: 18 });
+    doc.restoreGraphicsState();
   }
 }
 
@@ -349,16 +383,16 @@ function drawReceiptSlip(doc: jsPDF, data: ReceiptData, payment: PaymentRecord, 
 }
 
 /** Refund slip half (4.25 in wide), matching RefundSlipSheet. */
-function drawRefundSlip(doc: jsPDF, data: RefundSlipData, refund: RefundRecord, copy: 'customer' | 'studio', left: number, signature: string | null) {
+function drawRefundSlip(doc: jsPDF, data: RefundSlipData, refund: RefundRecord, copy: 'customer' | 'studio', left: number, signature: string | null, top = 0) {
   const reg = data.registration;
   const isCustomer = copy === 'customer';
-  const H = RECEIPT_HEIGHT_IN;
+  const H = top + RECEIPT_HEIGHT_IN; // bottom of this strip
   const x = left + 0.26;
   const w = 4.25 - 0.52;
   const right = x + w;
   const mid = x + w / 2;
   const figures = refundFigures(data, refund);
-  let y = 0.2;
+  let y = top + 0.2;
 
   put(doc, STUDIO_INFO.name.toUpperCase(), x, y + 0.14, { size: 11.5, bold: true });
   put(doc, `${STUDIO_INFO.shortAddress} · Tel. ${STUDIO_INFO.phone}`, x, y + 0.26, { size: 5.5, color: [68, 68, 68], width: w - 1.05 });
@@ -431,15 +465,30 @@ async function newDoc(format: [number, number]) {
   return new pdf.jsPDF({ orientation: format[0] > format[1] ? 'landscape' : 'portrait', unit: 'in', format });
 }
 
-/** Letter sheet: customer claim stub (top) and studio copy (bottom). */
-export async function downloadJobOrderPdf(data: ReceiptData, cashierName: string) {
+/**
+ * Letter sheet: customer claim stub (top) and studio copy (bottom).
+ * With `withRefundSlips`, every refund slip follows on letter pages, 3 strips per page, with saved signatures.
+ */
+export async function downloadJobOrderPdf(data: ReceiptData, cashierName: string, withRefundSlips = false) {
   const doc = await newDoc([8.5, 11]);
   const signature = await imageData(data.registration);
   drawJobOrderHalf(doc, data, 'customer', 0, cashierName, signature);
   rule(doc, 0.2, 5.5, 8.3, 5.5, 0.6, true);
   put(doc, '- - cut here - -', 4.25, 5.47, { size: 5.5, mono: true, color: [140, 140, 140], align: 'center' });
   drawJobOrderHalf(doc, data, 'studio', 5.5, cashierName, signature);
-  doc.save(`JobOrder_${data.registration.job_order_no || data.registration.id}.pdf`);
+  const slips = withRefundSlips ? data.refunds : [];
+  const signatures = await Promise.all(slips.map(loadRefundSignature));
+  slips.forEach((refund, index) => {
+    const slot = index % 3;
+    if (slot === 0) doc.addPage([8.5, 11], 'portrait');
+    const top = slot * RECEIPT_HEIGHT_IN;
+    drawRefundSlip(doc, data, refund, 'customer', 0, null, top);
+    rule(doc, 4.25, top + 0.15, 4.25, top + RECEIPT_HEIGHT_IN - 0.1, 0.6, true);
+    drawRefundSlip(doc, data, refund, 'studio', 4.25, signatures[index], top);
+    if (slot < 2 && index < slips.length - 1) rule(doc, 0.2, top + RECEIPT_HEIGHT_IN, 8.3, top + RECEIPT_HEIGHT_IN, 0.6, true);
+  });
+  const suffix = slips.length ? '_with_refund_slips' : '';
+  doc.save(`JobOrder_${data.registration.job_order_no || data.registration.id}${suffix}.pdf`);
 }
 
 /** Receipt strip (8.5 × 4.25 in): customer copy (left) and studio copy (right), on a letter sheet or a leftover piece. */
@@ -469,7 +518,7 @@ export async function downloadRefundSlipPdf(data: RefundSlipData, refund: Refund
   doc.save(`RefundSlip_${refund.refund_no}_JO${data.registration.job_order_no || data.registration.id}.pdf`);
 }
 
-/** Admin directory shortcut: loads the latest data and downloads the job order sheet. */
+/** Admin directory shortcut: the job order sheet, followed by its refund slips when money was given back. */
 export async function downloadJobOrderPdfFor(registration: Registration, cashierName = 'Cashier Staff') {
-  await downloadJobOrderPdf(await loadReceiptData(registration.id), cashierName);
+  await downloadJobOrderPdf(await loadReceiptData(registration.id), cashierName, true);
 }

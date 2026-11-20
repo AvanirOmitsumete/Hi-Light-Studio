@@ -87,25 +87,27 @@ export function buildAuditWorkbook(audit: AuditData, period: AuditPeriod, now = 
     { key: 'detail', width: 18 }, { key: 'pkg', width: 12 }, { key: 'status', width: 16 },
     { key: 'total', width: 14, style: { numFmt: PESO } }, { key: 'billed', width: 14, style: { numFmt: PESO } },
     { key: 'paid', width: 14, style: { numFmt: PESO } }, { key: 'refunded', width: 14, style: { numFmt: PESO } },
-    { key: 'balance', width: 14, style: { numFmt: PESO } }, { key: 'note', width: 34 },
+    { key: 'balance', width: 14, style: { numFmt: PESO } }, { key: 'overpaid', width: 14, style: { numFmt: PESO } },
+    { key: 'note', width: 34 },
   ];
   ordersSheet.getCell('A1').value = `${STUDIO_INFO.name} · Job Orders`;
   ordersSheet.getCell('A1').font = { bold: true, size: 14 };
   ordersSheet.getCell('A2').value = isPeriod ? `Job orders made in the period. ${range}` : `All job orders. ${range}`;
   ordersSheet.getRow(4).values = ['JO №', 'Date made', 'Client', 'School / Client', 'Course / Session', 'Package', 'Status',
-    'Job order total', 'Counted in gross', 'Paid', 'Refunded', 'Balance', 'Note'];
+    'Job order total', 'Counted in gross', 'Paid', 'Refunded', 'Balance', 'Refund due (overpaid)', 'Note'];
   headerRowStyle(ordersSheet, 4);
   const firstOrder = 5;
   for (const order of audit.orders) {
     const reg = order.registration;
     const notes = [
       order.cancelled && `Cancelled${reg.cancel_reason ? ` (${reg.cancel_reason})` : ''}: only money still held counts; nothing owed`,
-      order.overpaid > 0 && `Refund due ₱${order.overpaid.toFixed(2)}`,
+      order.overpaid > 0 && 'Paid more than the total: give back the refund due',
     ].filter(Boolean).join('. ');
     ordersSheet.addRow({
       jo: reg.job_order_no || '', made: when(reg.created), client: clientName(reg), group: clientGroup(reg, true),
       detail: clientDetail(reg, true), pkg: reg.expand?.package?.code || '', status: ORDER_STATUS[reg.status] ?? reg.status,
-      total: order.total, billed: order.billed, paid: order.paid, refunded: order.refunded, balance: order.balance, note: notes,
+      total: order.total, billed: order.billed, paid: order.paid, refunded: order.refunded, balance: order.balance,
+      overpaid: order.overpaid, note: notes,
     });
   }
   const lastOrder = firstOrder + audit.orders.length - 1;
@@ -116,6 +118,7 @@ export function buildAuditWorkbook(audit: AuditData, period: AuditPeriod, now = 
   ordersSheet.getCell(`J${ordersTotalRow}`).value = { formula: orderSum('J'), result: audit.totals.paidOnOrders };
   ordersSheet.getCell(`K${ordersTotalRow}`).value = { formula: orderSum('K'), result: audit.totals.refundedOnOrders };
   ordersSheet.getCell(`L${ordersTotalRow}`).value = { formula: orderSum('L'), result: audit.totals.outstanding };
+  ordersSheet.getCell(`M${ordersTotalRow}`).value = { formula: orderSum('M'), result: audit.totals.overpaid };
   totalRowStyle(ordersSheet, ordersTotalRow);
   setupPrint(ordersSheet, 'Job Orders', 4);
 
@@ -221,8 +224,8 @@ export function buildAuditWorkbook(audit: AuditData, period: AuditPeriod, now = 
       'Still unpaid on the active job orders listed', true],
   ];
   if (audit.totals.overpaid > 0) {
-    lines.push(['overpaid', '   Refund due (overpaid)', { formula: String(audit.totals.overpaid), result: audit.totals.overpaid },
-      'Paid beyond a job order total, still to be given back (see Notes on the Job Orders sheet)', true]);
+    lines.push(['overpaid', '   Refund due (overpaid)', { formula: `${orders}!M${ordersTotalRow}`, result: audit.totals.overpaid },
+      'Total of "Refund due" on the Job Orders sheet: paid beyond a job order total, still to be given back', true]);
   }
   if (isPeriod) {
     lines.push(['earlierPaid', 'Payments for job orders made before this period', {

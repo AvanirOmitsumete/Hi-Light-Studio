@@ -680,6 +680,12 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
     [restoredUnpaid.status, restoredUnpaid.paid_amount, restoredUnpaid.balance, restoredUnpaid.payment_status],
     ['pending_payment', 0, 1000, 'unpaid']);
   await send(records('registrations', refundedAll.id), { token: admin, method: 'DELETE', status: 409 });
+  // Orders restored to "Paid" with nothing held before that fix are repaired by migration 1793802600.
+  const brokenDb = new DatabaseSync(join(data, 'data.db'));
+  try { brokenDb.prepare("UPDATE registrations SET status = 'paid' WHERE id = ?").run(refundedAll.id); } finally { brokenDb.close(); }
+  execFileSync(executable, ['migrate', 'down', '1', ...flags], { ...options, input: 'y\n' });
+  execFileSync(executable, ['migrate', 'up', ...flags], options);
+  assert.equal((await registrations(refundedAll)).payload.status, 'pending_payment', 'the repair sends it back to Pending Payment');
   const mistake = await register(standard);
   await send(records('registrations', mistake.id), { token: admin, method: 'DELETE', status: 204 });
 
@@ -762,6 +768,17 @@ test('StudioFlow staff workflow on PocketBase and real photo folders', { timeout
   const pupil = await register(standard, [], 200, { level: grade6.level, course: grade6.course_id });
   const pupilRow = (await send(api + '/student-excel', { token: admin })).payload.rows.find((row) => row.jobOrder === pupil.job_order_no);
   assert.deepEqual([pupilRow.level, pupilRow.course], ['ELEMENTARY', 'G6']);
+
+  // Other fees change the price: the public kiosk can't set them; only an admin can, and the total follows.
+  const feeClient = await register(standard, [], 200, { other_fees: '-900' });
+  assert.deepEqual([feeClient.other_fees, feeClient.total_amount], [0, 1000], 'the kiosk cannot set other fees');
+  await pay(feeClient, 500, 'initial');
+  await registrations(feeClient, cashier, { other_fees: 150 }, 403);
+  await registrations(feeClient, admin, { other_fees: -10 }, 400);
+  const withFees = (await registrations(feeClient, admin, { other_fees: 150 })).payload;
+  assert.deepEqual([withFees.total_amount, withFees.paid_amount, withFees.balance, withFees.payment_status], [1150, 500, 650, 'downpayment']);
+  const feeRow = (await send(api + '/student-excel', { token: admin })).payload.rows.find((row) => row.jobOrder === feeClient.job_order_no);
+  assert.deepEqual([feeRow.due, feeRow.otherFees, feeRow.packageAmount], [115000, 15000, 100000], 'the export splits the total into package and other fees');
 
   // Camera hot-folder import: finished photos move from the camera's output
   // folder into the folder of the client linked to the camera.

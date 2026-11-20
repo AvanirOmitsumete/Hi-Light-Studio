@@ -33,6 +33,8 @@ interface StudentExcelRow {
   packageCode: string;
   packageAmount: number;
   addOns: Record<string, number>;
+  /** Other fees on the job order, in centavos (part of TOTAL DUE). */
+  otherFees?: number;
   /** Job order total, in centavos. */
   due: number;
   /** Counted payments (voided excluded) and refunds given back, in centavos. */
@@ -74,6 +76,8 @@ const financialColumns = [
   { key: 'balance', header: 'BALANCE' },
 ];
 const PESO = '"₱"#,##0.00;-"₱"#,##0.00';
+/** Column key for other fees (shown only when an order in the export has some). */
+const OTHER_FEES = 'otherFees';
 const peso = { numFmt: PESO };
 const studioDate = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -238,15 +242,6 @@ export function buildStudentWorkbook(
     width: catalogWidth(item.name),
     style: peso,
   }));
-  const catalogColumns = [...packageColumns, ...addOnColumns];
-  const moneyColumns = [...catalogColumns, ...financialColumns];
-  const definitions = [
-    ...studentColumns,
-    ...catalogColumns,
-    ...financialColumns.map((column) => ({ ...column, width: 17, style: peso })),
-  ];
-  const period = rangeLabel(range);
-
   // Orders in the date range, for the chosen scope. Cancelled orders are left off the sheets:
   // they are no longer owed; the Summary lists any money already received from them.
   const scoped = allRows.filter((row) => inRange(row, range) && (
@@ -255,6 +250,19 @@ export function buildStudentWorkbook(
     || (scope.kind === 'school' && row.level !== 'walkin' && row.schoolId === scope.schoolId)));
   const rows = scoped.filter((row) => !row.cancelled);
   const cancelled = scoped.filter((row) => row.cancelled);
+
+  // Other fees are part of TOTAL DUE; their column appears only when an order in this export has some,
+  // so package + add-ons + other fees always add up to TOTAL DUE on every row.
+  const otherFeesColumns = rows.some((row) => (row.otherFees ?? 0) > 0)
+    ? [{ key: OTHER_FEES, header: 'OTHER FEES', width: 16, style: peso }] : [];
+  const catalogColumns = [...packageColumns, ...addOnColumns, ...otherFeesColumns];
+  const moneyColumns = [...catalogColumns, ...financialColumns];
+  const definitions = [
+    ...studentColumns,
+    ...catalogColumns,
+    ...financialColumns.map((column) => ({ ...column, width: 17, style: peso })),
+  ];
+  const period = rangeLabel(range);
 
   const used = new Set<string>();
   const summary = scope.kind === 'levels' ? null : workbook.addWorksheet(sheetName('SUMMARY', used));
@@ -320,6 +328,7 @@ export function buildStudentWorkbook(
         const charges: Record<string, number> = {};
         if (student.packageId) charges[`package:${student.packageId}`] = student.packageAmount;
         for (const [id, amount] of Object.entries(student.addOns)) charges[`addon:${id}`] = amount;
+        if ((student.otherFees ?? 0) > 0) charges[OTHER_FEES] = student.otherFees ?? 0;
         const amountsInRow = { ...charges, due: student.due, full, additional, down, refunded, total, balance };
         for (const [column, amount] of Object.entries(amountsInRow)) {
           amounts.set(column, (amounts.get(column) ?? 0) + amount);
@@ -381,8 +390,10 @@ export function buildStudentWorkbook(
       const cell = countRow.getCell(column);
       const counted = blocks.filter((block) => block.last >= block.first)
         .map((block) => `COUNT(${letter(column)}${block.first}:${letter(column)}${block.last})`);
-      const count = students.filter((student) => column === `package:${student.packageId}`
-        || Object.prototype.hasOwnProperty.call(student.addOns, column.replace(/^addon:/, ''))).length;
+      const count = students.filter((student) => (column === OTHER_FEES
+        ? (student.otherFees ?? 0) > 0
+        : column === `package:${student.packageId}`
+          || Object.prototype.hasOwnProperty.call(student.addOns, column.replace(/^addon:/, '')))).length;
       cell.value = counted.length ? { formula: counted.join('+'), result: count } : 0;
       cell.numFmt = '0';
     }
@@ -481,12 +492,25 @@ export function buildStudentWorkbook(
     }
     grand.font = { bold: true };
     grand.eachCell((cell) => { cell.border = { top: { style: 'medium' }, bottom: { style: 'double' } }; });
-    const check = summary.addRow({ name: 'Check: TOTAL DUE − TOTAL PAYMENT − BALANCE (must be ₱0.00 unless someone overpaid)' });
+    // Clients who paid more than their total (after a cheaper package) have balance 0 and are owed money back.
+    const refundDue = rows.reduce((sum, row) => {
+      const paid = row.payments.full + row.payments.additional + row.payments.down - (row.payments.refunded ?? 0);
+      return sum + Math.max(0, paid - row.due);
+    }, 0) / 100;
+    const owed = summary.addRow({ name: 'Refund due: paid more than the total, still to be given back (TOTAL PAYMENT above TOTAL DUE on a client row)' });
+    owed.getCell('due').value = refundDue;
     const letterOf = (key: string) => summary.getColumn(key).letter;
-    check.getCell('due').value = {
-      formula: `ROUND(${letterOf('due')}${grand.number}-${letterOf('total')}${grand.number}-${letterOf('balance')}${grand.number},2)`,
-      result: 0,
+    const grandOf = (key: string) => {
+      const value = grand.getCell(key).value;
+      return typeof value === 'number' ? value : value && typeof value === 'object' && 'result' in value ? Number(value.result) || 0 : 0;
     };
+    const difference = Math.round((grandOf('due') - grandOf('total') - grandOf('balance') + refundDue) * 100) / 100;
+    const check = summary.addRow({ name: 'Check: TOTAL DUE − TOTAL PAYMENT − BALANCE + REFUND DUE (must be ₱0.00)' });
+    check.getCell('due').value = {
+      formula: `ROUND(${letterOf('due')}${grand.number}-${letterOf('total')}${grand.number}-${letterOf('balance')}${grand.number}+${letterOf('due')}${owed.number},2)`,
+      result: difference,
+    };
+    check.getCell('name').font = { bold: true };
     summary.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
     summary.headerFooter.oddFooter = `&L${STUDIO_INFO.name} · Overall Summary · ${period}&RPage &P of &N`;
   }
